@@ -1,0 +1,17 @@
+name: ${COMPOSE_PROJECT_NAME}
+
+services:
+
+  # Local LLM handler, for now only option to use application so always started
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:${OLLAMA_PORT:-11434}"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+
+volumes:
+  ollama_data:
