@@ -24,7 +24,31 @@ services:
         - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
       restart: unless-stopped
 
-
+  # Agent : dual-step LLM: planner (calls Ollama) + executor (client MCP).
+  # Receives user intent, constructs plan, waits approval from API,
+  #   then executes only what has been validated.
+  agent:
+    build: ${PWD}/agent
+    ports:
+      - "${AGENT_PORT:-8100}:${AGENT_PORT:-8100}"
+    depends_on:
+      - ollama
+      - mcp-server
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-ollama}
+      - OLLAMA_PORT=${OLLAMA_PORT:-11434}
+      - OLLAMA_API_BASE=http://${OLLAMA_HOST:-ollama}:${OLLAMA_PORT:-11434}
+      - OLLAMA_MODEL=qwen3:8b
+      - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT}
+      # Used to tell Python to not output Warning level (only) messages
+      # Useful because Google ADK will otherwise output several warnings during use
+      # One at start because cannot connect to Google Cloud since we didn't configure
+      #   "Google Application Default Credentials" so warns it fallbacks on "local".
+      # Others during run because it has features still in "experimental stage".
+      - PYTHONWARNINGS=ignore
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/data
 
 
 volumes:
