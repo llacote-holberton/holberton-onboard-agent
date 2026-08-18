@@ -22,9 +22,10 @@ services:
       - "${HBN_MCP_PORT:-8200}:${HBN_MCP_PORT:-8200}"
     environment:
       - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
+      - DATA_DIR=${DATA_DIR:-/app/data}
     volumes:
       # Added because will need access to write PDF and ics files
-      - ./data:/app/data
+      - ${DATA_HOST_DIR:-./data}:${DATA_DIR:-/app/data}
     restart: unless-stopped
 
   # Agent in two steps:
@@ -59,6 +60,40 @@ services:
     # No volume because Agent should not access anything directly, only MCP server
     #   writes things.
 
+  # The backbone serving all requests from front-end and redirecting.
+  backend:
+    build:
+      context: ${PWD}/backend
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME}-backend
+    ports:
+      - "${BACKEND_PORT:-8000}:${BACKEND_PORT:-8000}"
+    environment:
+      - BACKEND_PORT=${BACKEND_PORT:-8000}
+      - DATABASE_URL=sqlite:///${DATA_DIR:-/app/data}/onboarding.db
+      - AGENT_AI_URL=http://agent:${AGENT_PORT:-8100}
+      - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT:-8200}
+      - LOG_LEVEL=info
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${DATA_HOST_DIR:-./data}:${DATA_DIR:-/app/data}
+    depends_on:
+      - agent
+      - mcp-server
+      # Uncomment if/when agent and mcp-server expose their own /health
+      #   to make health check, otherwise Compose can never know if healthy thus
+      #   would never start
+      # agent:
+      #   condition: service_healthy
+      # mcp-server:
+      #   condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
 volumes:
   ollama_data:
