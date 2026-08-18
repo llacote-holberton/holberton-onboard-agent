@@ -1,8 +1,8 @@
 """
-Version minimale, juste pour vérifier que le container démarre, écoute sur le
-bon port, et répond au healthcheck défini dans docker-compose.yml.
-Pas de DB, pas de routers, pas d'appel à agent/mcp-server pour l'instant —
-tout ça arrive aux étapes suivantes.
+Minimal version, just to check that the container starts, listens on the
+right port, and responds to the healthcheck defined in docker-compose.yml.
+No DB, no routers, no call to agent/mcp-server yet — that comes in the
+next steps.
 """
 
 import os

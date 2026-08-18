@@ -1,8 +1,8 @@
 """
-Version minimale, juste pour vérifier que le container démarre et que le
-réseau docker-compose fonctionne bien entre frontend et backend.
-Pas de prompt, pas de checklist, pas de journal — ça arrive une fois que le
-backend a de vrais endpoints à appeler (cf. l'étape par étape côté backend).
+Minimal version, just to check that the container starts and that the
+docker-compose network works correctly between frontend and backend.
+No prompt, no checklist, no audit log yet — that comes once the backend
+has real endpoints to call (see the backend's step-by-step build).
 """
 
 import os
