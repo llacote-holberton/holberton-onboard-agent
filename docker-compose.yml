@@ -95,5 +95,25 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Interface Streamlit. Only sees backend, in HTTP/JSON — NEVER
+  # any direct call to agent / mcp-server / ollama / ./data volume.
+  frontend:
+    build:
+      context: ${PWD}/frontend
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME}-frontend
+    ports:
+      - "${FRONTEND_PORT:-8501}:${FRONTEND_PORT:-8501}"
+    environment:
+      - FRONTEND_PORT=${FRONTEND_PORT:-8501}
+      - BACKEND_URL=http://backend:${BACKEND_PORT:-8000}
+    depends_on:
+      - backend
+      # Idem que pour backend plus haut : enable once
+      # we could confirm healthcheck for backend is reliable.
+      # backend:
+      #   condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   ollama_data:
