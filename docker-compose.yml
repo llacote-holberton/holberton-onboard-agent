@@ -12,6 +12,20 @@ services:
       - ollama_data:/root/.ollama
     restart: unless-stopped
 
+  # Service providing curated access to filesystem/db/APIs for the agent
+  mcp-server:
+      build:
+        context: ${PWD}/mcp_server
+        dockerfile: DockerFile
+      ports:
+        # Warning: right side port must match port(s) exposed in DockerFile
+        - "${HBN_MCP_PORT:-8200}:${HBN_MCP_PORT:-8200}"
+      environment:
+        - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
+      restart: unless-stopped
+
+
+
 
 volumes:
   ollama_data:
