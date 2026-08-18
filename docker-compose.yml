@@ -1,7 +1,6 @@
 name: ${COMPOSE_PROJECT_NAME}
 
 services:
-
   # Local LLM handler, for now only option to use application so always started
   ollama:
     image: ollama/ollama:latest
@@ -14,21 +13,33 @@ services:
 
   # Service providing curated access to filesystem/db/APIs for the agent
   mcp-server:
-      build:
-        context: ${PWD}/mcp_server
-        dockerfile: DockerFile
-      ports:
-        # Warning: right side port must match port(s) exposed in DockerFile
-        - "${HBN_MCP_PORT:-8200}:${HBN_MCP_PORT:-8200}"
-      environment:
-        - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
-      restart: unless-stopped
+    build:
+      context: ${PWD}/mcp_server
+      dockerfile: Dockerfile          # casse corrigée (était "DockerFile") — vérifie le nom réel du fichier sur le disque
+    container_name: ${COMPOSE_PROJECT_NAME}-mcp-server
+    ports:
+      # Warning: right side port must match port(s) exposed in Dockerfile
+      - "${HBN_MCP_PORT:-8200}:${HBN_MCP_PORT:-8200}"
+    environment:
+      - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
+    volumes:
+      # Added because will need access to write PDF and ics files
+      - ./data:/app/data
+    restart: unless-stopped
 
-  # Agent : dual-step LLM: planner (calls Ollama) + executor (client MCP).
-  # Receives user intent, constructs plan, waits approval from API,
-  #   then executes only what has been validated.
+  # Agent in two steps:
+  #   1. Planification: initiates prompts, get tools scheme
+  #      from MCP server (list_tools, read only), calls Ollama.
+  #   2. Execution: backend sens list of approved actions
+  #      (and filtered by idempotence aka did they already were done);
+  #      agent runs them one by one via call_tool() on MCP server. Dispatch
+  #      Only automatic dispatch no new LLM call here and agent cannot decide
+  #      which actions it makes
+  # NOTE: "cancel" actions DO NOT go through agent but managed directly
+  #   by MCP server from backend trigger (as they are decided by human).
   agent:
     build: ${PWD}/agent
+    container_name: ${COMPOSE_PROJECT_NAME}-agent
     ports:
       - "${AGENT_PORT:-8100}:${AGENT_PORT:-8100}"
     depends_on:
@@ -39,16 +50,14 @@ services:
       - OLLAMA_PORT=${OLLAMA_PORT:-11434}
       - OLLAMA_API_BASE=http://${OLLAMA_HOST:-ollama}:${OLLAMA_PORT:-11434}
       - OLLAMA_MODEL=qwen3:8b
-      - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT}
+      - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT:-8200}
       # Used to tell Python to not output Warning level (only) messages
-      # Useful because Google ADK will otherwise output several warnings during use
-      # One at start because cannot connect to Google Cloud since we didn't configure
-      #   "Google Application Default Credentials" so warns it fallbacks on "local".
-      # Others during run because it has features still in "experimental stage".
+      # Useful if using Google ADK because we won't configure
+      #  "Google Application Default Credentials" so warns it fallbacks on "local".
       - PYTHONWARNINGS=ignore
       - PYTHONUNBUFFERED=1
-    volumes:
-      - ./data:/data
+    # No volume because Agent should not access anything directly, only MCP server
+    #   writes things.
 
 
 volumes:
