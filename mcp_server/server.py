@@ -10,7 +10,7 @@ import tools.calendar
 import os
 
 
-MCP_PORT = int(os.getenv("HBN_MCP_PORT", "5003"))
+MCP_PORT = int(os.getenv("HBN_MCP_PORT", "8200"))
 
 if __name__ == "__main__":
     mcp.run(
