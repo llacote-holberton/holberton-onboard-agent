@@ -8,6 +8,6 @@ COPY . .
 
 EXPOSE 8501
 
-# Forme "shell" (pas de crochets) volontairement, pour que ${FRONTEND_PORT}
-# soit bien substitué par le shell au démarrage du container.
+# Shell form on purpose (no brackets), so ${FRONTEND_PORT} actually gets
+# substituted by the shell when the container starts.
 CMD streamlit run app.py --server.address=0.0.0.0 --server.port=${FRONTEND_PORT:-8501}

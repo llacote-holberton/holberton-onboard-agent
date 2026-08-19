@@ -1,0 +1,4 @@
+# Dev-only dependencies (tests, linting). Not installed in the runtime image
+# -- Dockerfile only installs requirements.txt, to keep it lean.
+-r requirements.txt
+pytest>=8.0
