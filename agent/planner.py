@@ -16,6 +16,7 @@ Contrat consommé par backend/app/services/agent_client.py :
 import os
 import httpx
 from fastmcp import Client
+from datetime import date
 
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
@@ -26,6 +27,7 @@ MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
 SYSTEM_PROMPT = (
+    f"Nous sommes le {date.today().isoformat()}. "
     "Tu es un agent qui prépare l'arrivée de nouveaux collaborateurs. "
     "À partir de l'intention de l'utilisateur, propose les actions pertinentes "
     "en appelant les outils disponibles. Tu ne dois JAMAIS exécuter d'action "
