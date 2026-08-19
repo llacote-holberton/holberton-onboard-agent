@@ -132,56 +132,67 @@ if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
 plan = st.session_state.plan
 
 if plan:
-    st.subheader(f"Plan proposé ({len(plan['actions'])} actions)")
+    if not plan["actions"]:
+        # Peut arriver plus souvent que prévu avec un petit modèle local
+        # (voir les limites documentées côté agent/mcp-server) -- sans ce
+        # cas, l'écran affichait "Plan proposé (0 actions)" avec une
+        # checklist vide et un bouton désactivé, sans explication.
+        st.warning(
+            "Aucune action pertinente n'a été identifiée pour cette demande. "
+            "Essayez de reformuler avec une intention liée à l'onboarding d'un collaborateur."
+        )
+    else:
+        st.subheader(f"Plan proposé ({len(plan['actions'])} actions)")
 
-    # Each checkbox is pre-checked, matching the original wireframe. The key
-    # is scoped to this plan's action id, so a freshly generated plan (new
-    # ids) always starts fully checked -- Streamlit only respects `value=`
-    # the first time it sees a given key.
-    checkbox_states = {
-        action["id"]: st.checkbox(action["summary"], value=True, key=f"action_{action['id']}")
-        for action in plan["actions"]
-    }
+        # Each checkbox is pre-checked, matching the original wireframe. The
+        # key is scoped to this plan's action id, so a freshly generated
+        # plan (new ids) always starts fully checked -- Streamlit only
+        # respects `value=` the first time it sees a given key.
+        checkbox_states = {
+            action["id"]: st.checkbox(action["summary"], value=True, key=f"action_{action['id']}")
+            for action in plan["actions"]
+        }
 
-    selected_count = sum(checkbox_states.values())
-    total_count = len(plan["actions"])
-    st.caption(f"{selected_count} action(s) sélectionnée(s) sur {total_count}")
+        selected_count = sum(checkbox_states.values())
+        total_count = len(plan["actions"])
+        st.caption(f"{selected_count} action(s) sélectionnée(s) sur {total_count}")
 
-    if st.button("Exécuter la sélection", type="primary", disabled=selected_count == 0):
-        with st.spinner("Exécution…"):
-            try:
-                # Step 1: send the human's approve/refuse decision for every
-                # proposed action.
-                for action in plan["actions"]:
-                    decision_status = "approved" if checkbox_states[action["id"]] else "refused"
-                    decision = requests.patch(
-                        f"{BACKEND_URL}/actions/{action['id']}",
-                        json={"status": decision_status},
-                        timeout=30,
-                    )
-                    decision.raise_for_status()
+        if st.button("Exécuter la sélection", type="primary", disabled=selected_count == 0):
+            with st.spinner("Exécution…"):
+                try:
+                    # Step 1: send the human's approve/refuse decision for
+                    # every proposed action.
+                    for action in plan["actions"]:
+                        decision_status = "approved" if checkbox_states[action["id"]] else "refused"
+                        decision = requests.patch(
+                            f"{BACKEND_URL}/actions/{action['id']}",
+                            json={"status": decision_status},
+                            timeout=30,
+                        )
+                        decision.raise_for_status()
 
-                # Step 2: trigger execution of the now-approved actions.
-                execution = requests.post(f"{BACKEND_URL}/plans/{plan['id']}/execute", timeout=60)
-                execution.raise_for_status()
-                results = execution.json()
+                    # Step 2: trigger execution of the now-approved actions.
+                    execution = requests.post(f"{BACKEND_URL}/plans/{plan['id']}/execute", timeout=60)
+                    execution.raise_for_status()
+                    results = execution.json()
 
-                executed_count = sum(1 for r in results if r["status"] == "executed")
-                st.success(f"{executed_count} action(s) exécutée(s) sur {len(results)}.")
+                    executed_count = sum(1 for r in results if r["status"] == "executed")
+                    st.success(f"{executed_count} action(s) exécutée(s) sur {len(results)}.")
+                    st.session_state.trace = fetch_audit_trace(plan["id"])
+                except Exception as exc:
+                    st.error(f"Échec de l'exécution : {describe_error(exc)}")
+
+        # Persiste en dehors du bloc "Exécuter" ci-dessus (pas juste au
+        # moment du clic) pour rester affichée sur les reruns suivants --
+        # ex. quand tu coches/décoches une action après une première
+        # exécution.
+        if st.session_state.trace is not None:
+            st.subheader("Traçabilité de ce plan")
+            st.caption(f"Plan `{plan['id']}` — du plus ancien au plus récent (GET /audit?plan_id=...).")
+            render_audit_trace(st.session_state.trace)
+            if st.button("Rafraîchir la trace"):
                 st.session_state.trace = fetch_audit_trace(plan["id"])
-            except Exception as exc:
-                st.error(f"Échec de l'exécution : {describe_error(exc)}")
-
-    # Persiste en dehors du bloc "Exécuter" ci-dessus (pas juste au moment
-    # du clic) pour rester affichée sur les reruns suivants -- ex. quand tu
-    # coches/décoches une action après une première exécution.
-    if st.session_state.trace is not None:
-        st.subheader("Traçabilité de ce plan")
-        st.caption(f"Plan `{plan['id']}` — du plus ancien au plus récent (GET /audit?plan_id=...).")
-        render_audit_trace(st.session_state.trace)
-        if st.button("Rafraîchir la trace"):
-            st.session_state.trace = fetch_audit_trace(plan["id"])
-            st.rerun()
+                st.rerun()
 
 # --- Traçabilité : retrouver un plan précédent ----------------------------
 # Utile si la page a été rechargée (session_state.plan reparti à None) mais
