@@ -4,6 +4,7 @@ Endpoints for plans: creation (planning step), lookup, and execution.
 
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -25,7 +26,14 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
     plan = Plan(prompt=body.prompt)
     db.add(plan)
 
-    proposed_actions = await agent_client.plan(body.prompt)
+    try:
+        proposed_actions = await agent_client.plan(body.prompt)
+    except httpx.HTTPError as exc:
+        # Nothing was flushed/committed yet at this point, so there is
+        # nothing to roll back -- but calling it explicitly documents the
+        # intent and protects this code if that ordering ever changes.
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"Agent AI /plan call failed: {exc}") from exc
 
     for proposed in proposed_actions:
         action = Action(
@@ -89,9 +97,17 @@ async def execute_plan(plan_id: str, db: Session = Depends(get_db)):
         results.append(ExecuteResult(action_id=action.id, status="executed", result=action.result, note=note))
 
     if to_dispatch:
-        dispatched = await agent_client.execute(
-            [{"action_id": a.id, "tool": a.tool, "params": a.params} for a in to_dispatch]
-        )
+        try:
+            dispatched = await agent_client.execute(
+                [{"action_id": a.id, "tool": a.tool, "params": a.params} for a in to_dispatch]
+            )
+        except httpx.HTTPError as exc:
+            # Actions already resolved as duplicates above are rolled back
+            # too -- the whole execute call fails together, the client can
+            # retry once the agent is reachable.
+            db.rollback()
+            raise HTTPException(status_code=502, detail=f"Agent AI /execute call failed: {exc}") from exc
+
         outcomes_by_id = {r["action_id"]: r for r in dispatched}
 
         for action in to_dispatch:

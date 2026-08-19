@@ -12,7 +12,27 @@ function boundary, not at the HTTP level, so they should keep passing.
 
 from unittest.mock import AsyncMock
 
+import httpx
+
 from app.models import Action, Plan
+
+
+def test_create_plan_returns_502_when_agent_ai_is_unreachable(client, db_session, monkeypatch):
+    """Reproduces the real bug reported after wiring the Streamlit frontend
+    to the real stack: the Agent AI didn't have /plan yet, agent_client.plan()
+    raised an httpx error, and the endpoint used to leak that as an opaque
+    500. It must come back as a clean 502 with a message pointing at the
+    Agent AI call, not a generic Internal Server Error."""
+    monkeypatch.setattr(
+        "app.services.agent_client.plan",
+        AsyncMock(side_effect=httpx.ConnectError("Connection refused")),
+    )
+
+    response = client.post("/plans", json={"prompt": "onboard Jane Doe"})
+
+    assert response.status_code == 502
+    assert "Agent AI" in response.json()["detail"]
+    assert db_session.query(Plan).count() == 0  # nothing persisted on failure
 
 
 def test_create_plan_persists_proposed_actions(client, db_session, monkeypatch):

@@ -52,7 +52,15 @@ async def undo_action(action_id: str, db: Session = Depends(get_db)):
             detail=f"Action is '{action.status}', only an 'executed' action can be undone",
         )
 
-    outcome = await mcp_client.undo(action.tool, action.params, action.result)
+    try:
+        outcome = await mcp_client.undo(action.tool, action.params, action.result)
+    except Exception as exc:
+        # Broad on purpose: fastmcp can raise connection errors, protocol
+        # errors, or its own ToolError -- all of them mean the same thing
+        # here, "the MCP server call failed", and none should surface as an
+        # opaque 500.
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"MCP server 'undo' call failed: {exc}") from exc
 
     action.status = "undone"
     action.undone_at = datetime.now(timezone.utc)
