@@ -28,6 +28,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Onboarding Agent — Backend", lifespan=lifespan)
 
+app.include_router(audit.router)
+
 
 @app.get("/health")
 def health():
