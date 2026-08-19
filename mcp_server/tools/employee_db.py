@@ -26,6 +26,9 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Annotated
+
+from pydantic import AliasChoices, Field
 
 from domain_types import EmployeeRef
 from mcp_instance import mcp
@@ -64,12 +67,59 @@ def _connect() -> sqlite3.Connection:
 
 @mcp.tool
 def create_employee_record(
-    name: str,
-    role: str,
-    team: str,
-    start_date: date,
+    name: Annotated[
+        str,
+        Field(
+            validation_alias=AliasChoices("name", "employee_name"),
+            description="Nom complet du nouveau collaborateur (ex: 'Léa Martin').",
+        ),
+    ],
+    role: Annotated[
+        str,
+        Field(description="Intitulé de poste (ex: 'Développeuse Backend')."),
+    ],
+    team: Annotated[
+        str,
+        Field(
+            description=(
+                "Équipe d'accueil (ex: 'Backend') -- à extraire du contexte "
+                "donné par l'utilisateur (souvent mentionnée à côté du rôle "
+                "ou du poste, ex: 'nouvelle développeuse dans l'équipe "
+                "Backend'). Obligatoire : ne jamais omettre ce champ même "
+                "si non répété explicitement juste avant cet appel."
+            )
+        ),
+    ],
+    start_date: Annotated[
+        date,
+        Field(description="Date d'arrivée du collaborateur, au format ISO (AAAA-MM-JJ)."),
+    ],
 ) -> EmployeeRef:
     """Écrit la fiche du nouveau collaborateur en base.
+
+    NOTE (2026-08-20, repro observée en usage réel) : le paramètre
+    ci-dessous s'appelle `name`, PAS `employee_name` -- contrairement à
+    create_onboarding_issue et send_welcome_message, qui utilisent bien
+    `employee_name`. Un run réel a vu le LLM confondre les deux
+    conventions (appel avec `employee_name` au lieu de `name`, et `team`
+    complètement omis), rejeté par la validation Pydantic mcp-server.
+    Descriptions ci-dessous enrichies suite à cet incident pour réduire le
+    risque de récidive -- pas de garantie totale avec un petit modèle local
+    (même famille de limite que le `checklist` manquant documenté dans
+    tracker.py).
+
+    `name` accepte aussi `employee_name` en entrée (validation_alias, voir
+    l'import AliasChoices) -- patch direct de la confusion observée, en
+    plus des descriptions enrichies. Vérifié (2026-08-20) contre le vrai
+    pydantic 2.13.3 (celui de l'erreur reçue) : `model_json_schema()`
+    continue d'exposer "name" comme unique propriété (pas de fuite de
+    "employee_name" vers le LLM), et `validate_call` sur une fonction
+    reproduisant exactement cette signature résout bien `employee_name=...`
+    vers le paramètre `name` à l'appel. Cette dernière partie teste le
+    mécanisme Pydantic lui-même, PAS le passage réel par FastMCP
+    (`@mcp.tool` -> `call_tool()` -> cette fonction) -- toujours pas
+    vérifiable sans accès PyPI dans ce bac à sable. Voir
+    mcp_server/tests/test_employee_db.py pour le test correspondant.
 
     Args:
         name: Nom complet du nouveau collaborateur (ex: "Léa Martin").
@@ -100,3 +150,34 @@ def create_employee_record(
         connection.close()
 
     return employee_id
+
+
+@mcp.tool
+def delete_employee_record(employee: EmployeeRef) -> bool:
+    """Fonction de compensation de create_employee_record (voir docs/TOOLS.md
+    "Fonctions de compensation") : supprime la ligne de la base.
+
+    Outil INTERNE, jamais exposé au LLM au moment du plan -- voir
+    agent/planner.py::_INTERNAL_ONLY_TOOLS. Appelé uniquement par le backend
+    lors d'une annulation (POST /actions/{id}/undo), avec `employee` égal à
+    l'EmployeeRef que create_employee_record avait renvoyé (stocké tel quel
+    dans Action.result -- voir backend/app/services/mcp_client.py).
+
+    Returns:
+        True si une ligne a bien été supprimée. False si `employee` ne
+        correspond à aucune ligne existante (déjà supprimée, ou id invalide)
+        -- pas une exception : ce n'est pas un échec technique, juste un
+        signal explicite que l'appelant peut choisir d'interpréter comme un
+        échec d'annulation (c'est le choix fait côté mcp_client.py) plutôt
+        que de rapporter un succès sur rien.
+    """
+    connection = _connect()
+    try:
+        connection.execute(_CREATE_TABLE_SQL)
+        cursor = connection.execute("DELETE FROM employees WHERE id = ?", (employee,))
+        connection.commit()
+        deleted = cursor.rowcount > 0
+    finally:
+        connection.close()
+
+    return deleted
