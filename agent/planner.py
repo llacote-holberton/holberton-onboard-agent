@@ -85,7 +85,7 @@ async def _discover_tools() -> list[dict]:
 async def build_plan(prompt: str) -> list[dict]:
     tools = await _discover_tools()
 
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=110) as client:
         r = await client.post(
             f"{OLLAMA_API_BASE}/api/chat",
             json={

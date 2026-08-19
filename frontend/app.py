@@ -240,7 +240,7 @@ with st.expander("Diagnostic de connectivité"):
                 # Must stay above agent_client.py's _PING_LLM_TIMEOUT (90s)
                 # on the backend side, or this button times out before the
                 # backend itself gives up.
-                response = requests.get(f"{BACKEND_URL}/agent/ping-llm", timeout=100)
+                response = requests.get(f"{BACKEND_URL}/agent/ping-llm", timeout=130)
                 response.raise_for_status()
                 st.success(f"Agent + LLM joignables : {response.json()}")
             except Exception as exc:
