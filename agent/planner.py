@@ -38,9 +38,17 @@ SYSTEM_PROMPT = (
 # Résumés lisibles pour l'écran d'approbation. Légère duplication des noms
 # de tools (le set réel reste découvert dynamiquement) -- acceptable tant
 # qu'on a 5 tools fixes, à revoir si le catalogue devient très dynamique.
+#
+# NOTE (2026-08-20) : {team} a été ajouté au template de
+# create_employee_record -- condition nécessaire pour que le nouveau défaut
+# de `team` (voir mcp_server/tools/employee_db.py::_TEAM_PLACEHOLDER) reste
+# acceptable : la valeur retenue (fournie par le LLM ou le placeholder de
+# repli) doit rester visible ici pour qu'un humain puisse la corriger ou
+# refuser l'action, plutôt que d'écrire silencieusement en base une équipe
+# potentiellement fausse ou un placeholder non voulu.
 _SUMMARY_TEMPLATES = {
     "create_onboarding_issue": "Créer le ticket onboarding pour {employee_name}",
-    "create_employee_record": "Créer la fiche employé pour {name} ({role})",
+    "create_employee_record": "Créer la fiche employé pour {name} ({role}) — équipe : {team}",
     "send_welcome_message": "Envoyer un message d'accueil ({channel}) à l'équipe {team} pour {employee_name}",
     "generate_handbook": "Générer le document '{template}'",
     "create_calendar_event": "Créer l'événement '{title}'",
@@ -65,12 +73,37 @@ _INTERNAL_ONLY_TOOLS = {
 }
 
 
+class _MissingParamAsPlaceholder(dict):
+    """Utilisé par _summarize ci-dessous : quand un champ du template n'a
+    pas été fourni par le LLM au moment du plan (ex: `team` omis sur
+    create_employee_record), affiche un texte explicite au lieu de faire
+    échouer le format() -- voir la note 2026-08-20 juste en dessous pour
+    pourquoi c'est important, pas juste cosmétique."""
+
+    def __missing__(self, key):
+        return "(non fourni — une valeur par défaut sera utilisée à l'exécution)"
+
+
 def _summarize(tool_name: str, params: dict) -> str:
+    # NOTE (2026-08-20) : `params` ici, ce sont les arguments BRUTS renvoyés
+    # par le tool-call du LLM, AVANT toute validation/défaut Pydantic côté
+    # mcp-server (qui n'a lieu qu'à l'exécution, après approbation humaine).
+    # Donc si le LLM omet `team`, ce dict ne contient pas "team" du tout à
+    # ce stade. `create_employee_record` s'appuie maintenant sur un défaut
+    # pour `team` (voir mcp_server/tools/employee_db.py::_TEAM_PLACEHOLDER)
+    # dont la justification explicite est : "visible dans le résumé
+    # d'approbation, l'humain peut refuser si besoin". Un simple
+    # `template.format(**params)` qui lève KeyError sur le champ manquant
+    # et retombe sur le fallback brut ci-dessous NE MENTIONNERAIT MÊME PAS
+    # `team` (le fallback ne liste que les clés présentes dans `params`) --
+    # ça briserait cette garantie en silence. `_MissingParamAsPlaceholder`
+    # comble spécifiquement ce trou : un champ absent du template s'affiche
+    # explicitement comme tel, plutôt que de disparaître du résumé.
     template = _SUMMARY_TEMPLATES.get(tool_name)
     if template:
         try:
-            return template.format(**params)
-        except (KeyError, IndexError):
+            return template.format_map(_MissingParamAsPlaceholder(params))
+        except (IndexError, ValueError):
             pass
     # Fallback si le template ne correspond plus aux vrais paramètres du
     # tool (ex: signature modifiée par un·e coéquipier·ère) -- affiche les

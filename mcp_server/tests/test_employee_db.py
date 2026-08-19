@@ -21,7 +21,6 @@ import sqlite3
 from datetime import date
 
 import pydantic
-import pytest
 from tools import employee_db
 
 
@@ -247,16 +246,57 @@ def test_create_employee_record_still_accepts_name_directly(tmp_path, monkeypatc
     assert row == ("Camille",)
 
 
-def test_create_employee_record_still_requires_team(tmp_path, monkeypatch):
-    """The alias only patches the name/employee_name mix-up -- `team` stays
-    required, on purpose (see the team="all" discussion: no honest default
-    exists for a real employee's team, so an omission should keep failing
-    loudly rather than writing a wrong value)."""
+def test_create_employee_record_defaults_team_to_a_placeholder_when_omitted(tmp_path, monkeypatch):
+    """2026-08-20, plus tard la même session : le refus initial d'un défaut
+    pour `team` (voir la docstring de create_employee_record et
+    docs/TOOLS.md pour l'historique complet) est revu après une deuxième
+    repro réelle consécutive où le LLM l'omet malgré la description déjà
+    enrichie. Décision explicite de Laurent : accepter un défaut pour aller
+    vite et passer le palier en cours, quitte à revenir dessus ensuite.
+
+    Ce n'est pas la même situation que le `team="all"` écarté au premier
+    tour : le placeholder retenu ne ressemble à aucun nom d'équipe
+    plausible (voir _TEAM_PLACEHOLDER), ET agent/planner.py::_summarize a
+    été corrigé en parallèle pour que ce genre de valeur reste visible dans
+    le résumé d'approbation même quand le LLM omet le champ (voir
+    agent/tests/test_planner.py) -- l'humain garde la main avant toute
+    écriture en base."""
     db_path = tmp_path / "onboarding.db"
     monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(employee_db, "DB_PATH", db_path)
 
     validated = pydantic.validate_call(employee_db.create_employee_record)
 
-    with pytest.raises(pydantic.ValidationError):
-        validated(employee_name="Camille", role="Développeuse Backend", start_date=date(2026, 8, 1))
+    employee_id = validated(
+        employee_name="Camille", role="Développeuse Backend", start_date=date(2026, 8, 1)
+    )
+
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT team FROM employees WHERE id = ?", (employee_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == (employee_db._TEAM_PLACEHOLDER,)
+
+
+def test_create_employee_record_team_is_still_overridable(tmp_path, monkeypatch):
+    """Guards against the new default silently winning even when `team` IS
+    provided -- the whole point is to only kick in on omission."""
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    employee_id = employee_db.create_employee_record(
+        name="Camille", role="Développeuse Backend", team="Backend", start_date=date(2026, 8, 1),
+    )
+
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT team FROM employees WHERE id = ?", (employee_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("Backend",)

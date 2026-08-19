@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS employees (
 """
 
 
+# Valeur de repli pour `team` quand le LLM l'omet -- voir la docstring de
+# create_employee_record ci-dessous pour l'historique complet de cette
+# décision (revenue en arrière le 2026-08-20, plus tard la même session).
+# Choisie pour ne ressembler à aucun nom d'équipe plausible (contrairement
+# à "all", envisagé puis écarté au premier tour) : si elle apparaît sur le
+# résumé d'approbation, elle doit sauter aux yeux comme un placeholder à
+# corriger, pas comme une vraie équipe passée inaperçue.
+_TEAM_PLACEHOLDER = "À préciser"
+
+
 def _connect() -> sqlite3.Connection:
     """Module-level DATA_DIR/DB_PATH are read here (not captured in a
     closure) so tests can monkeypatch them per-case without reloading the
@@ -78,6 +88,10 @@ def create_employee_record(
         str,
         Field(description="Intitulé de poste (ex: 'Développeuse Backend')."),
     ],
+    start_date: Annotated[
+        date,
+        Field(description="Date d'arrivée du collaborateur, au format ISO (AAAA-MM-JJ)."),
+    ],
     team: Annotated[
         str,
         Field(
@@ -85,15 +99,14 @@ def create_employee_record(
                 "Équipe d'accueil (ex: 'Backend') -- à extraire du contexte "
                 "donné par l'utilisateur (souvent mentionnée à côté du rôle "
                 "ou du poste, ex: 'nouvelle développeuse dans l'équipe "
-                "Backend'). Obligatoire : ne jamais omettre ce champ même "
-                "si non répété explicitement juste avant cet appel."
+                "Backend'). Ne jamais l'omettre si l'information est "
+                "disponible dans la demande. Si malgré tout absente, une "
+                f"valeur de repli ('{_TEAM_PLACEHOLDER}') est utilisée -- "
+                "visible dans le résumé d'approbation, à corriger ou "
+                "refuser côté humain plutôt que de bloquer l'action."
             )
         ),
-    ],
-    start_date: Annotated[
-        date,
-        Field(description="Date d'arrivée du collaborateur, au format ISO (AAAA-MM-JJ)."),
-    ],
+    ] = _TEAM_PLACEHOLDER,
 ) -> EmployeeRef:
     """Écrit la fiche du nouveau collaborateur en base.
 
@@ -121,11 +134,30 @@ def create_employee_record(
     vérifiable sans accès PyPI dans ce bac à sable. Voir
     mcp_server/tests/test_employee_db.py pour le test correspondant.
 
+    MISE À JOUR (2026-08-20, plus tard la même session) : `team` recevait
+    volontairement AUCUN défaut jusqu'ici (voir l'historique ci-dessus et
+    docs/TOOLS.md) -- décision revue après une deuxième repro réelle
+    consécutive où le LLM l'omet malgré la description déjà enrichie.
+    Décision explicite de Laurent : accepter un défaut pour aller vite et
+    passer le palier en cours, quitte à revenir dessus ensuite si besoin.
+    Différence assumée avec le `"all"` écarté au premier tour : le
+    placeholder retenu (`_TEAM_PLACEHOLDER`, "À préciser") ne ressemble à
+    aucun nom d'équipe plausible, ET `agent/planner.py::_SUMMARY_TEMPLATES`
+    a été mis à jour pour afficher `{team}` dans le résumé d'approbation de
+    ce tool (il ne l'affichait pas avant, ce qui rendait un défaut
+    invisible et donc risqué) -- l'humain voit encore la valeur retenue et
+    peut refuser l'action avant toute écriture en base si elle ne convient
+    pas. Reste un pis-aller : la ligne est bien écrite avec ce placeholder
+    si l'humain approuve sans vérifier ; pas un problème nouveau (même
+    risque que pour `channel` sur send_welcome_message), mais à garder en
+    tête si ce champ est fréquemment mal renseigné en pratique.
+
     Args:
         name: Nom complet du nouveau collaborateur (ex: "Léa Martin").
         role: Intitulé de poste (ex: "Développeuse Backend").
-        team: Équipe d'accueil (ex: "Backend").
         start_date: Date d'arrivée du collaborateur.
+        team: Équipe d'accueil (ex: "Backend"). Par défaut "À préciser" si
+            omise (voir la note ci-dessus).
 
     Returns:
         L'ID de la ligne insérée (EmployeeRef est un simple alias de `str`,
