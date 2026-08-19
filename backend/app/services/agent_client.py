@@ -28,6 +28,22 @@ import httpx
 from app.config import AGENT_AI_URL
 
 _TIMEOUT = httpx.Timeout(30.0)
+_PING_TIMEOUT = httpx.Timeout(10.0)
+
+# ping_llm() specifically waits on a real LLM round trip (agent -> Ollama),
+# and agent/main.py's own call to Ollama already allows up to 60s (see
+# OLLAMA_API_BASE client in ping-llm). This timeout MUST stay comfortably
+# above that, or the backend gives up on the agent before the agent gives
+# up on Ollama.
+#
+# In practice ping_llm() also needs enough RAM for Ollama to actually load
+# a model, which turned out not to be a given (OOM-killed even on the
+# smallest qwen3 tag, on a 3GB-constrained environment) -- that failure
+# mode is independent of this codebase and outside what a longer timeout
+# can fix. ping() below exists specifically to decouple "is the agent
+# reachable" (what palier 2 needs) from "can this machine run an LLM right
+# now" (a separate, later concern).
+_PING_LLM_TIMEOUT = httpx.Timeout(90.0)
 
 
 async def plan(prompt: str) -> list[dict[str, Any]]:
@@ -52,13 +68,25 @@ async def execute(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def ping() -> dict[str, Any]:
-    """Basic end-to-end connectivity check (backend -> Agent AI -> Ollama),
-    with no project-specific logic involved -- calls the agent's existing
-    /ping-llm endpoint, which already exists on Hugo's side today. This is
-    what unblocks palier 2: proving the backend can actually reach and
-    talk to the agent, ahead of the real /plan and /execute contract
-    above (which the agent doesn't implement yet)."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    """Lightweight connectivity check (backend -> Agent AI), with NO LLM
+    call and no meaningful memory footprint -- calls the agent's GET /ping
+    (see agent_plan_execute_proposal.py, a 3-line addition for Hugo). This
+    is the palier 2 gate: proving the backend can reach and talk to the
+    agent process itself, independent of whether the machine has enough
+    RAM to also run Ollama right now."""
+    async with httpx.AsyncClient(timeout=_PING_TIMEOUT) as client:
+        response = await client.get(f"{AGENT_AI_URL}/ping")
+        response.raise_for_status()
+        return response.json()
+
+
+async def ping_llm() -> dict[str, Any]:
+    """Heavier connectivity check: also exercises the agent -> Ollama LLM
+    round trip (the agent's pre-existing GET /ping-llm). Needs enough
+    memory for Ollama to actually load the configured model -- expect this
+    to fail/OOM under a tight memory budget even for a small model. Not
+    required for palier 2 -- see ping() above."""
+    async with httpx.AsyncClient(timeout=_PING_LLM_TIMEOUT) as client:
         response = await client.get(f"{AGENT_AI_URL}/ping-llm")
         response.raise_for_status()
         return response.json()

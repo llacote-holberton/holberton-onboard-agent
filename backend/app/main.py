@@ -48,13 +48,25 @@ def root():
 @app.get("/agent/ping")
 async def ping_agent():
     """Palier 2 gate: proves the backend can reach and talk to the Agent
-    AI end to end (backend -> agent -> Ollama), with no project-specific
-    planning/execution logic involved -- that comes later. See
-    agent_client.ping()."""
+    AI process itself -- no LLM call, no project-specific planning/
+    execution logic. See agent_client.ping()."""
     try:
         agent_response = await agent_client.ping()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Agent AI unreachable: {exc}") from exc
+    return {"agent_reachable": True, "agent_response": agent_response}
+
+
+@app.get("/agent/ping-llm")
+async def ping_agent_llm():
+    """Heavier, optional check: also exercises the agent -> Ollama LLM
+    round trip. NOT required for palier 2 -- expect this to fail/time out
+    on a memory-constrained machine even with a small model; that's an
+    environment limitation, not a bug. See agent_client.ping_llm()."""
+    try:
+        agent_response = await agent_client.ping_llm()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Agent AI /ping-llm call failed: {exc}") from exc
     return {"agent_reachable": True, "agent_response": agent_response}
 
 

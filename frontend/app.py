@@ -21,6 +21,24 @@ import streamlit as st
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000")
 
+
+def describe_error(exc: Exception) -> str:
+    """requests' HTTPError.__str__() is just the generic status line
+    ("502 Server Error: Bad Gateway for url: ..."), which throws away the
+    `detail` message the backend actually put in the JSON body (see the
+    502 handling added in routers/plans.py, routers/actions.py, main.py).
+    Prefer that detail when there is one -- it's what actually explains a
+    failure (e.g. "Agent AI unreachable: ReadTimeout")."""
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            detail = response.json().get("detail")
+            if detail:
+                return detail
+        except ValueError:
+            pass
+    return str(exc)
+
 st.set_page_config(page_title="Onboarding Agent", page_icon="✅", layout="centered")
 
 # --- Session state -------------------------------------------------------
@@ -51,7 +69,7 @@ if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
             response.raise_for_status()
             st.session_state.plan = response.json()
         except Exception as exc:
-            st.error(f"Impossible de générer le plan : {exc}")
+            st.error(f"Impossible de générer le plan : {describe_error(exc)}")
             st.session_state.plan = None
 
 # --- 2. Plan proposé (checklist) -------------------------------------------
@@ -97,7 +115,7 @@ if plan:
                 st.success(f"{executed_count} action(s) exécutée(s) sur {len(results)}.")
                 st.caption("Suivi d'exécution détaillé et journal d'audit : à venir dans une prochaine itération.")
             except Exception as exc:
-                st.error(f"Échec de l'exécution : {exc}")
+                st.error(f"Échec de l'exécution : {describe_error(exc)}")
 
 # --- Diagnostic (palier 2) --------------------------------------------
 # Separate from the flow above on purpose: proves the chain frontend ->
@@ -113,13 +131,27 @@ with st.expander("Diagnostic de connectivité"):
             response.raise_for_status()
             st.success(f"Backend joignable : {response.json()}")
         except Exception as exc:
-            st.error(f"Backend injoignable : {exc}")
+            st.error(f"Backend injoignable : {describe_error(exc)}")
 
-    if st.button("Vérifier l'agent (bout en bout)"):
-        with st.spinner("Appel de l'agent (peut prendre du temps, le LLM doit répondre)…"):
+    if st.button("Vérifier l'agent (rapide, sans LLM)"):
+        # This is the palier 2 gate: backend <-> agent reachability, no
+        # Ollama call, no meaningful memory footprint.
+        try:
+            response = requests.get(f"{BACKEND_URL}/agent/ping", timeout=15)
+            response.raise_for_status()
+            st.success(f"Agent joignable : {response.json()}")
+        except Exception as exc:
+            st.error(f"Agent injoignable : {describe_error(exc)}")
+
+    if st.button("Vérifier l'agent + LLM (optionnel)"):
+        st.caption("Peut échouer si la machine n'a pas assez de RAM pour charger le modèle — indépendant du code.")
+        with st.spinner("Appel de l'agent (peut prendre du temps sur un premier chargement du modèle)…"):
             try:
-                response = requests.get(f"{BACKEND_URL}/agent/ping", timeout=65)
+                # Must stay above agent_client.py's _PING_LLM_TIMEOUT (90s)
+                # on the backend side, or this button times out before the
+                # backend itself gives up.
+                response = requests.get(f"{BACKEND_URL}/agent/ping-llm", timeout=100)
                 response.raise_for_status()
-                st.success(f"Agent joignable : {response.json()}")
+                st.success(f"Agent + LLM joignables : {response.json()}")
             except Exception as exc:
-                st.error(f"Agent injoignable : {exc}")
+                st.error(f"Agent + LLM : {describe_error(exc)}")
