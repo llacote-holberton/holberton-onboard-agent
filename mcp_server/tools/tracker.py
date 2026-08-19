@@ -158,3 +158,26 @@ async def create_onboarding_issue(
         data = response.json()
 
     return data["html_url"]
+
+
+def _extract_issue_number(issue_ref: str) -> str:
+    """create_onboarding_issue actually returns `data["html_url"]` (see
+    above), e.g. "https://github.com/owner/repo/issues/42" -- NOT the bare
+    number ("42") that docs/TOOLS.md's table currently describes ("le
+    numéro/ID de l'issue créée"). That table entry was stale relative to
+    the code; corrected alongside this function. Parses the trailing path
+    segment rather than assuming any particular owner/repo, so this keeps
+    working even if GITHUB_REPO changes between an issue's creation and its
+    undo. Raises ValueError (never guesses a number) if `issue_ref` doesn't
+    look like a GitHub issue URL -- same "fail explicit" principle already
+    used by _resolve_start_date above and by mailbox.py's directory lookup.
+    """
+    trimmed = issue_ref.rstrip("/")
+    number = trimmed.rsplit("/", 1)[-1]
+    if not number.isdigit():
+        raise ValueError(
+            f"Could not extract a GitHub issue number from {issue_ref!r} -- "
+            "expected a GitHub issue URL ending in /<number>."
+        )
+    return number
+
