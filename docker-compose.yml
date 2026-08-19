@@ -23,6 +23,8 @@ services:
     environment:
       - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
       - DATA_DIR=${DATA_DIR:-/app/data}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
     volumes:
       # Added because will need access to write PDF and ics files
       - ${DATA_HOST_DIR:-./data}:${DATA_DIR:-/app/data}
