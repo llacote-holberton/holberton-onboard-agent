@@ -1,0 +1,14 @@
+# Keep the production image lean: tests and dev tooling are not needed at
+# runtime (see requirements-dev.txt, only requirements.txt is installed by
+# the Dockerfile).
+tests/
+conftest.py
+pytest.ini
+requirements-dev.txt
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data, if the backend is ever run outside docker compose from this
+# directory.
+data/
