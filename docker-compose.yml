@@ -37,6 +37,9 @@ services:
       # Mailbox tool target -- see the mailhog service above.
       - MAILHOG_HOST=mailhog
       - MAILHOG_SMTP_PORT=${MAILHOG_SMTP_PORT:-1025}
+      # Variables required for Github Issues API connection.
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
     volumes:
       # Added because will need access to write PDF and ics files
       - ${DATA_HOST_DIR:-./data}:${DATA_DIR:-/app/data}
