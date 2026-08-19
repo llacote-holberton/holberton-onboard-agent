@@ -66,7 +66,7 @@ services:
       - OLLAMA_HOST=${OLLAMA_HOST:-ollama}
       - OLLAMA_PORT=${OLLAMA_PORT:-11434}
       - OLLAMA_API_BASE=http://${OLLAMA_HOST:-ollama}:${OLLAMA_PORT:-11434}
-      - OLLAMA_MODEL=qwen3:8b
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
       - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT:-8200}
       # Used to tell Python to not output Warning level (only) messages
       # Useful if using Google ADK because we won't configure
