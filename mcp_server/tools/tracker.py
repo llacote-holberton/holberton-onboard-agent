@@ -181,3 +181,54 @@ def _extract_issue_number(issue_ref: str) -> str:
         )
     return number
 
+
+@mcp.tool
+async def close_onboarding_issue(issue: IssueRef) -> bool:
+    """Fonction de compensation de create_onboarding_issue (voir
+    docs/TOOLS.md "Fonctions de compensation") : ferme l'issue GitHub sans
+    la supprimer -- l'API GitHub ne permet pas de supprimer une issue.
+
+    Outil INTERNE, jamais exposé au LLM au moment du plan -- voir
+    agent/planner.py::_INTERNAL_ONLY_TOOLS. Appelé uniquement par le backend
+    lors d'une annulation (POST /actions/{id}/undo), avec `issue` égal à
+    l'IssueRef que create_onboarding_issue avait renvoyé (l'URL complète,
+    stockée telle quelle dans Action.result).
+
+    PATCH .../issues/{number} avec state=closed est idempotent côté GitHub
+    (fermer une issue déjà fermée ne renvoie pas d'erreur) -- pas besoin de
+    vérifier l'état actuel avant d'agir.
+
+    Returns:
+        True si la réponse de GitHub confirme l'issue fermée (state ==
+        "closed"). False dans le cas, normalement impossible en pratique
+        vu ce qui précède, où l'appel réussit sans refléter cet état.
+
+    Raises:
+        RuntimeError: GITHUB_TOKEN/GITHUB_REPO manquants.
+        ValueError: `issue` ne ressemble pas à une URL d'issue GitHub
+            exploitable (voir _extract_issue_number).
+        httpx.HTTPStatusError: l'appel GitHub échoue (réseau, token
+            invalide, issue introuvable...).
+    """
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        raise RuntimeError(
+            "GITHUB_TOKEN et GITHUB_REPO doivent être définis dans l'environnement "
+            "(voir .env.example)."
+        )
+
+    issue_number = _extract_issue_number(issue)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.patch(
+            f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/issues/{issue_number}",
+            headers={
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            json={"state": "closed"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    return data.get("state") == "closed"
