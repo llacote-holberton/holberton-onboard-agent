@@ -41,7 +41,7 @@ SYSTEM_PROMPT = (
 _SUMMARY_TEMPLATES = {
     "create_onboarding_issue": "Créer le ticket onboarding pour {employee_name}",
     "create_employee_record": "Créer la fiche employé pour {name} ({role})",
-    "send_welcome_message": "Envoyer un message d'accueil à {recipient}",
+    "send_welcome_message": "Envoyer un message d'accueil ({channel}) à l'équipe {team} pour {employee_name}",
     "generate_handbook": "Générer le document '{template}'",
     "create_calendar_event": "Créer l'événement '{title}'",
 }
@@ -49,12 +49,18 @@ _SUMMARY_TEMPLATES = {
 
 def _summarize(tool_name: str, params: dict) -> str:
     template = _SUMMARY_TEMPLATES.get(tool_name)
-    if not template:
-        return f"Exécuter {tool_name}"
-    try:
-        return template.format(**params)
-    except (KeyError, IndexError):
-        return f"Exécuter {tool_name}"
+    if template:
+        try:
+            return template.format(**params)
+        except (KeyError, IndexError):
+            pass
+    # Fallback si le template ne correspond plus aux vrais paramètres du
+    # tool (ex: signature modifiée par un·e coéquipier·ère) -- affiche les
+    # paramètres bruts plutôt qu'un nom de tool sec et peu lisible.
+    if params:
+        readable = ", ".join(f"{k}: {v}" for k, v in params.items())
+        return f"{tool_name} ({readable})"
+    return f"Exécuter {tool_name}"
 
 
 async def _discover_tools() -> list[dict]:
