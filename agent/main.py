@@ -17,3 +17,7 @@ async def ping_llm():
             "stream": False
         })
         return r.json()
+
+@app.get("/ping")
+async def ping():
+    return {"status": "agent alive"}
