@@ -41,7 +41,12 @@ class ActionRead(BaseModel):
     summary: str
     status: ActionStatus
     idempotency_key: str
-    result: Optional[dict[str, Any]] = None
+    # Any, not dict: domain_types.py's *Ref types (IssueRef, MessageRef, ...)
+    # are plain `str` aliases, not structured objects -- a tool's result is
+    # typically a bare string (e.g. an issue number, a file path, a
+    # Message-ID), not necessarily a dict. See TOOLS.md "Annuaire factice"
+    # and mcp_server/tools/mailbox.py.
+    result: Optional[Any] = None
     created_at: datetime
     executed_at: Optional[datetime] = None
     undone_at: Optional[datetime] = None
@@ -89,7 +94,7 @@ class ExecuteResult(BaseModel):
 
     action_id: str
     status: ActionStatus
-    result: Optional[dict[str, Any]] = None
+    result: Optional[Any] = None  # see ActionRead.result -- usually a bare str, not a dict
     note: Optional[str] = None
     # e.g. "already executed, not replayed" when the idempotency filter
     # skips an action instead of sending it to the agent again.

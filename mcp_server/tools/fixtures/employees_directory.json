@@ -1,0 +1,35 @@
+{
+  "_comment": "Fake existing-staff directory, versioned with the code (NOT the runtime SQLite DB, which only stores the new hire being onboarded). Used by the mailbox tool to resolve a `team` name into real recipient email addresses instead of letting the LLM invent one. Suggested location: mcp_server/tools/fixtures/employees_directory.json -- adjust the import path in mailbox.py to match your actual layout.",
+
+  "departments": {
+    "Backend": {
+      "manager_email": "sofia.martins@holberton.example",
+      "members": [
+        {"name": "Sofia Martins", "email": "sofia.martins@holberton.example", "role": "Engineering Manager"},
+        {"name": "Karim Haddad", "email": "karim.haddad@holberton.example", "role": "Backend Developer"},
+        {"name": "Lea Fontaine", "email": "lea.fontaine@holberton.example", "role": "Backend Developer"}
+      ]
+    },
+    "Frontend": {
+      "manager_email": "yann.oliveira@holberton.example",
+      "members": [
+        {"name": "Yann Oliveira", "email": "yann.oliveira@holberton.example", "role": "Engineering Manager"},
+        {"name": "Nadia Benali", "email": "nadia.benali@holberton.example", "role": "Frontend Developer"},
+        {"name": "Tom Girard", "email": "tom.girard@holberton.example", "role": "Frontend Developer"}
+      ]
+    },
+    "Product": {
+      "manager_email": "ines.duarte@holberton.example",
+      "members": [
+        {"name": "Ines Duarte", "email": "ines.duarte@holberton.example", "role": "Product Manager"},
+        {"name": "Marc Lefevre", "email": "marc.lefevre@holberton.example", "role": "Product Designer"}
+      ]
+    },
+    "IT": {
+      "manager_email": "it-support@holberton.example",
+      "members": [
+        {"name": "Support IT", "email": "it-support@holberton.example", "role": "IT Support"}
+      ]
+    }
+  }
+}
