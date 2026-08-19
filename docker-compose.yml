@@ -11,6 +11,17 @@ services:
       - ollama_data:/root/.ollama
     restart: unless-stopped
 
+  # Fake SMTP server + web UI. Used by mcp-server's "mailbox" tool to send
+  # onboarding emails without touching a real mail provider -- open the web
+  # UI (MAILHOG_WEB_PORT) to see what was actually sent, no real inbox needed.
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-mailhog
+    ports:
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"  # SMTP -- what mcp-server connects to
+      - "${MAILHOG_WEB_PORT:-8025}:8025"   # web UI -- to visually check sent emails
+    restart: unless-stopped
+
   # Service providing curated access to filesystem/db/APIs for the agent
   mcp-server:
     build:
@@ -23,9 +34,14 @@ services:
     environment:
       - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
       - DATA_DIR=${DATA_DIR:-/app/data}
+      # Mailbox tool target -- see the mailhog service above.
+      - MAILHOG_HOST=mailhog
+      - MAILHOG_SMTP_PORT=${MAILHOG_SMTP_PORT:-1025}
     volumes:
       # Added because will need access to write PDF and ics files
       - ${DATA_HOST_DIR:-./data}:${DATA_DIR:-/app/data}
+    depends_on:
+      - mailhog
     restart: unless-stopped
 
   # Agent in two steps:
