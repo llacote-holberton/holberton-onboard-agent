@@ -20,6 +20,8 @@ been corrected after the AttributeError it predicted actually fired.
 import sqlite3
 from datetime import date
 
+import pydantic
+import pytest
 from tools import employee_db
 
 
@@ -89,3 +91,172 @@ def test_create_employee_record_two_calls_get_distinct_ids(tmp_path, monkeypatch
     finally:
         connection.close()
     assert count == 2
+
+
+# --- delete_employee_record (undo compensation) -----------------------
+
+
+def test_delete_employee_record_removes_the_row_and_returns_true(tmp_path, monkeypatch):
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    employee_id = employee_db.create_employee_record(
+        name="Camille Test", role="Dev", team="Backend", start_date=date(2026, 3, 3),
+    )
+
+    deleted = employee_db.delete_employee_record(employee_id)
+
+    assert deleted is True
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM employees WHERE id = ?", (employee_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is None
+
+
+def test_delete_employee_record_returns_false_for_unknown_id(tmp_path, monkeypatch):
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    deleted = employee_db.delete_employee_record("does-not-exist")
+
+    assert deleted is False
+
+
+def test_delete_employee_record_only_removes_the_targeted_row(tmp_path, monkeypatch):
+    """Guards against a WHERE-less DELETE (or a wrong column) that would
+    wipe every row instead of just the targeted one."""
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    keep_id = employee_db.create_employee_record(
+        name="Keep Me", role="Dev", team="Backend", start_date=date(2026, 1, 1),
+    )
+    remove_id = employee_db.create_employee_record(
+        name="Remove Me", role="Dev", team="Backend", start_date=date(2026, 1, 2),
+    )
+
+    deleted = employee_db.delete_employee_record(remove_id)
+
+    assert deleted is True
+    connection = sqlite3.connect(db_path)
+    try:
+        remaining_ids = {
+            row[0] for row in connection.execute("SELECT id FROM employees").fetchall()
+        }
+    finally:
+        connection.close()
+    assert remaining_ids == {keep_id}
+
+
+# --- `name` accepting `employee_name` (validation_alias) -----------------
+#
+# Repro from tonight's real run: the LLM called create_employee_record with
+# `employee_name` instead of `name` (and dropped `team` entirely). The
+# `team` omission has no clean fix (no honest default -- see the team=
+# "all" discussion) but the `employee_name`/`name` mix-up is a genuine
+# naming confusion an alias can absorb directly.
+#
+# These tests do NOT call employee_db.create_employee_record(...) as a
+# plain Python function like the tests above -- a plain call bypasses
+# Pydantic entirely (no validation happens on a normal function call), so
+# it could never exercise validation_alias. They instead wrap the SAME
+# function object with pydantic.validate_call, which is what actually
+# reads Field(validation_alias=...) and resolves alternate input keys to
+# the canonical parameter name before the function body runs -- the
+# closest thing to FastMCP's own tool-calling behavior that could be
+# verified without installing fastmcp itself (see the module docstring in
+# employee_db.py for exactly what was and wasn't confirmed this way).
+
+
+def test_create_employee_record_schema_does_not_expose_employee_name(tmp_path, monkeypatch):
+    """The alias must stay purely an input-side convenience -- the JSON
+    schema handed to the LLM (via agent/planner.py's tool discovery) should
+    still show a single canonical "name" property, not "employee_name" or
+    both. If this ever starts failing, something about how the alias was
+    declared changed in a way that could confuse the LLM further instead of
+    helping."""
+    # model_json_schema() isn't directly reachable off a validate_call-
+    # wrapped function the way it is off a BaseModel -- rebuild the same
+    # Annotated signature as a throwaway BaseModel instead, which IS what
+    # `model_json_schema()` is meant for, and is the same mechanism this
+    # module's own docstring says was checked by hand.
+    import inspect
+
+    import pydantic as _pydantic
+
+    sig = inspect.signature(employee_db.create_employee_record)
+    fields = {name: (param.annotation, ...) for name, param in sig.parameters.items()}
+    ThrowawayModel = _pydantic.create_model("ThrowawayModel", **fields)
+    schema = ThrowawayModel.model_json_schema()
+
+    assert "name" in schema["properties"]
+    assert "employee_name" not in schema["properties"]
+
+
+def test_create_employee_record_accepts_employee_name_as_an_alias_for_name(tmp_path, monkeypatch):
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    validated = pydantic.validate_call(employee_db.create_employee_record)
+
+    employee_id = validated(
+        employee_name="Camille",
+        role="Développeuse Backend",
+        team="Backend",
+        start_date=date(2026, 8, 1),
+    )
+
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT name FROM employees WHERE id = ?", (employee_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("Camille",)
+
+
+def test_create_employee_record_still_accepts_name_directly(tmp_path, monkeypatch):
+    """Guards against an alias declaration that accidentally replaces the
+    canonical key instead of adding an alternative to it."""
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    validated = pydantic.validate_call(employee_db.create_employee_record)
+
+    employee_id = validated(
+        name="Camille", role="Développeuse Backend", team="Backend", start_date=date(2026, 8, 1),
+    )
+
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT name FROM employees WHERE id = ?", (employee_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("Camille",)
+
+
+def test_create_employee_record_still_requires_team(tmp_path, monkeypatch):
+    """The alias only patches the name/employee_name mix-up -- `team` stays
+    required, on purpose (see the team="all" discussion: no honest default
+    exists for a real employee's team, so an omission should keep failing
+    loudly rather than writing a wrong value)."""
+    db_path = tmp_path / "onboarding.db"
+    monkeypatch.setattr(employee_db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(employee_db, "DB_PATH", db_path)
+
+    validated = pydantic.validate_call(employee_db.create_employee_record)
+
+    with pytest.raises(pydantic.ValidationError):
+        validated(employee_name="Camille", role="Développeuse Backend", start_date=date(2026, 8, 1))
