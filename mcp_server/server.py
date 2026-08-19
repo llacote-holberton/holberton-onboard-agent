@@ -1,14 +1,10 @@
 from mcp_instance import mcp
-
-"""
 import tools.tracker
 import tools.employee_db
 import tools.mailbox
 import tools.documents
-import tools.calendar
-"""
+import tools.event_calendar
 import os
-
 
 MCP_PORT = int(os.getenv("HBN_MCP_PORT", "8200"))
 
