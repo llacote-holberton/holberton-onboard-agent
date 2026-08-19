@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Onboarding Agent — Backend", lifespan=lifespan)
 
+app.include_router(plans.router)
 app.include_router(audit.router)
 
 
