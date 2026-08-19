@@ -1,15 +1,32 @@
 """
-Minimal version, just to check that the container starts, listens on the
-right port, and responds to the healthcheck defined in docker-compose.yml.
-No DB, no routers, no call to agent/mcp-server yet — that comes in the
-next steps.
+FastAPI application entrypoint.
+
+Wires together the lifespan handler (creates DB tables on startup via
+init_db(), see database.py) and the routers for plans, actions, and the
+audit trail.
 """
 
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-app = FastAPI(title="Onboarding Agent — Backend")
+from app.database import init_db
+from app.routers import actions, audit, plans
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- startup ---
+    init_db()
+    yield
+    # --- shutdown ---
+    # Nothing to clean up explicitly here: SQLAlchemy sessions are opened
+    # and closed per-request by the get_db() dependency, not held at the
+    # application level.
+
+
+app = FastAPI(title="Onboarding Agent — Backend", lifespan=lifespan)
 
 
 @app.get("/health")
