@@ -3,3 +3,6 @@ uvicorn[standard]>=0.34
 sqlalchemy==2.0.51
 pydantic>=2.9
 httpx>=0.28
+# MCP client, to call mcp-server directly for undo (see services/mcp_client.py).
+# Matches the framework mcp-server itself is built with (fastmcp.FastMCP).
+fastmcp>=2.3

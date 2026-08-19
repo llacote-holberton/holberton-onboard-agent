@@ -21,7 +21,12 @@ from pydantic import BaseModel, ConfigDict
 
 # Mirrors the status comment on models.Action — kept in sync manually since
 # Pydantic and SQLAlchemy don't share a single enum source in this project.
-ActionStatus = Literal["proposed", "approved", "refused", "executed", "undone"]
+# "error" was added after reviewing the Agent AI side of the contract: a
+# tool call can genuinely fail at execution time (network issue, invalid
+# params, mcp-server down), and that needs a status distinct from
+# "executed" -- it must NOT be treated as "already done" by the
+# idempotency filter in routers/plans.py.
+ActionStatus = Literal["proposed", "approved", "refused", "executed", "undone", "error"]
 
 
 class ActionRead(BaseModel):

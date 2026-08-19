@@ -83,6 +83,41 @@ def test_execute_dispatches_approved_actions_and_completes_plan(client, db_sessi
     assert plan.status == "completed"
 
 
+def test_execute_records_error_status_when_agent_reports_a_failure(client, db_session, monkeypatch):
+    """A tool call can genuinely fail (network issue, invalid params,
+    mcp-server down). The agent reports status="error" for that action, and
+    it must be stored as-is -- NOT silently coerced to "executed", which
+    would make the idempotency filter treat a failed attempt as done."""
+    plan = Plan(prompt="onboard Jane Doe")
+    action = Action(
+        tool="create_onboarding_issue",
+        params={"employee": "Jane Doe"},
+        summary="Create the onboarding issue",
+        idempotency_key="key-1",
+        status="approved",
+    )
+    plan.actions.append(action)
+    db_session.add(plan)
+    db_session.commit()
+
+    execute_mock = AsyncMock(
+        return_value=[
+            {"action_id": action.id, "status": "error", "result": None, "note": "tracker API timed out"}
+        ]
+    )
+    monkeypatch.setattr("app.services.agent_client.execute", execute_mock)
+
+    response = client.post(f"/plans/{plan.id}/execute")
+
+    assert response.status_code == 200
+    results = response.json()
+    assert results[0]["status"] == "error"
+    assert results[0]["note"] == "tracker API timed out"
+
+    db_session.refresh(action)
+    assert action.status == "error"
+
+
 def test_execute_skips_action_already_executed_under_another_plan(client, db_session, monkeypatch):
     """The core idempotency guarantee: resubmitting the same intent creates
     a new Plan/Action, but if an action with the same idempotency_key was

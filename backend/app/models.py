@@ -46,7 +46,11 @@ class Action(Base):
     summary = Column(String, nullable=False)  # human-readable, shown in the checklist UI
 
     status = Column(String, nullable=False, default="proposed")
-    # proposed | approved | refused | executed | undone
+    # proposed | approved | refused | executed | undone | error
+    # "error": the agent attempted the tool call and it failed (network,
+    # invalid params, mcp-server down, ...). Distinct from "executed" so
+    # the idempotency filter in routers/plans.py never treats a failed
+    # attempt as "already done".
 
     idempotency_key = Column(String, nullable=False, index=True)
     # Not unique on purpose: re-submitting the same intent creates new Action
@@ -79,7 +83,7 @@ class AuditLog(Base):
     id = Column(String, primary_key=True, default=_uuid)
     action_id = Column(String, ForeignKey("actions.id"), nullable=False)
     status = Column(String, nullable=False)
-    # proposed | approved | refused | executed | undone
+    # proposed | approved | refused | executed | undone | error
     note = Column(String, nullable=True)  # e.g. "already executed, not replayed"
     timestamp = Column(DateTime, default=_now)
 
