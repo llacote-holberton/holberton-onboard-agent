@@ -1,6 +1,9 @@
 # Files to ignore either because "contextual" to host, too sensitive...
 #   Or just pointless to track XD.
 
+# Application's running data
+data
+
 # Local environment variables (often contains secrets, API keys, etc.)
 .env
 
