@@ -46,6 +46,24 @@ _SUMMARY_TEMPLATES = {
     "create_calendar_event": "Créer l'événement '{title}'",
 }
 
+# Fonctions de compensation ("undo") : outils internes appelés uniquement
+# par le backend lors d'une annulation (POST /actions/{id}/undo, voir
+# backend/app/services/mcp_client.py), jamais par le LLM au moment du plan
+# -- voir docs/TOOLS.md "Outils internes (non exposés au LLM)". mcp-server
+# ne fait pourtant aucune distinction structurelle entre un tool de
+# création et un tool de compensation (les deux sont juste @mcp.tool dans
+# le même fichier -- voir tools/tracker.py, tools/employee_db.py), donc
+# list_tools() les renvoie tous pêle-mêle : c'est ici, pas côté
+# mcp-server, que le tri se fait avant de les proposer à Ollama. Liste à
+# tenir à jour à la main à chaque nouvelle fonction de compensation
+# implémentée -- pas de convention de nommage (ex. préfixe "undo_") ni de
+# métadonnée FastMCP exploitée pour l'instant, volontairement simple tant
+# qu'il n'y a que deux entrées.
+_INTERNAL_ONLY_TOOLS = {
+    "close_onboarding_issue",
+    "delete_employee_record",
+}
+
 
 def _summarize(tool_name: str, params: dict) -> str:
     template = _SUMMARY_TEMPLATES.get(tool_name)
@@ -63,12 +81,13 @@ def _summarize(tool_name: str, params: dict) -> str:
     return f"Exécuter {tool_name}"
 
 
-async def _discover_tools() -> list[dict]:
-    """Lecture seule -- aucun effet de bord. Convertit le schéma MCP
-    (déjà en JSON Schema) au format tool-calling d'Ollama."""
-    async with Client(_MCP_ENDPOINT) as mcp_client:
-        tools = await mcp_client.list_tools()
-
+def _to_ollama_tools(tools: list) -> list[dict]:
+    """Convertit une liste d'objets Tool MCP (déjà en JSON Schema pour leurs
+    paramètres) au format tool-calling d'Ollama, en excluant les fonctions
+    de compensation internes (_INTERNAL_ONLY_TOOLS) -- le LLM ne doit
+    jamais pouvoir les choisir dans un plan. Fonction pure, séparée de
+    _discover_tools() ci-dessous, pour être testable sans dépendre d'un
+    vrai mcp-server ni du package fastmcp."""
     return [
         {
             "type": "function",
@@ -79,7 +98,17 @@ async def _discover_tools() -> list[dict]:
             },
         }
         for t in tools
+        if t.name not in _INTERNAL_ONLY_TOOLS
     ]
+
+
+async def _discover_tools() -> list[dict]:
+    """Lecture seule -- aucun effet de bord. Convertit le schéma MCP
+    (déjà en JSON Schema) au format tool-calling d'Ollama."""
+    async with Client(_MCP_ENDPOINT) as mcp_client:
+        tools = await mcp_client.list_tools()
+
+    return _to_ollama_tools(tools)
 
 
 async def build_plan(prompt: str) -> list[dict]:
