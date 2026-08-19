@@ -70,6 +70,34 @@ def test_get_plan_404_when_missing(client):
     assert response.status_code == 404
 
 
+def test_execute_accepts_a_bare_string_result(client, db_session, monkeypatch):
+    """Regression guard: domain_types.py's *Ref types (IssueRef, MessageRef,
+    ...) are plain `str` aliases, not dicts -- e.g. mailbox.py's
+    send_welcome_message returns a Message-ID string. ExecuteResult.result
+    used to be typed dict-only, which would 500 on exactly this shape."""
+    plan = Plan(prompt="onboard Jane Doe")
+    action = Action(
+        tool="send_welcome_message",
+        params={"employee_name": "Jane Doe", "team": "Backend", "channel": "team"},
+        summary="Send the welcome e-mail to the Backend team",
+        idempotency_key="key-1",
+        status="approved",
+    )
+    plan.actions.append(action)
+    db_session.add(plan)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.agent_client.execute",
+        AsyncMock(return_value=[{"action_id": action.id, "status": "executed", "result": "<msg-id@example>"}]),
+    )
+
+    response = client.post(f"/plans/{plan.id}/execute")
+
+    assert response.status_code == 200
+    assert response.json()[0]["result"] == "<msg-id@example>"
+
+
 def test_execute_dispatches_approved_actions_and_completes_plan(client, db_session, monkeypatch):
     plan = Plan(prompt="onboard Jane Doe")
     action = Action(
