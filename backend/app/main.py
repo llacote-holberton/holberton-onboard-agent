@@ -9,10 +9,12 @@ audit trail.
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, HTTPException
 
 from app.database import init_db
 from app.routers import actions, audit, plans
+from app.services import agent_client
 
 
 @asynccontextmanager
@@ -41,6 +43,19 @@ def health():
 @app.get("/")
 def root():
     return {"service": "backend", "status": "running"}
+
+
+@app.get("/agent/ping")
+async def ping_agent():
+    """Palier 2 gate: proves the backend can reach and talk to the Agent
+    AI end to end (backend -> agent -> Ollama), with no project-specific
+    planning/execution logic involved -- that comes later. See
+    agent_client.ping()."""
+    try:
+        agent_response = await agent_client.ping()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Agent AI unreachable: {exc}") from exc
+    return {"agent_reachable": True, "agent_response": agent_response}
 
 
 if __name__ == "__main__":

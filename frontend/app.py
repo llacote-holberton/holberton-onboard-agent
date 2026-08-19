@@ -98,3 +98,28 @@ if plan:
                 st.caption("Suivi d'exécution détaillé et journal d'audit : à venir dans une prochaine itération.")
             except Exception as exc:
                 st.error(f"Échec de l'exécution : {exc}")
+
+# --- Diagnostic (palier 2) --------------------------------------------
+# Separate from the flow above on purpose: proves the chain frontend ->
+# backend -> agent (-> Ollama) actually talks to itself, without depending
+# on any project-specific planning/execution logic that isn't built yet.
+
+with st.expander("Diagnostic de connectivité"):
+    st.caption("Vérifie que chaque service de la chaîne est bien joignable, indépendamment du flux ci-dessus.")
+
+    if st.button("Vérifier le backend"):
+        try:
+            response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+            response.raise_for_status()
+            st.success(f"Backend joignable : {response.json()}")
+        except Exception as exc:
+            st.error(f"Backend injoignable : {exc}")
+
+    if st.button("Vérifier l'agent (bout en bout)"):
+        with st.spinner("Appel de l'agent (peut prendre du temps, le LLM doit répondre)…"):
+            try:
+                response = requests.get(f"{BACKEND_URL}/agent/ping", timeout=65)
+                response.raise_for_status()
+                st.success(f"Agent joignable : {response.json()}")
+            except Exception as exc:
+                st.error(f"Agent injoignable : {exc}")

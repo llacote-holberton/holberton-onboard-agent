@@ -49,3 +49,16 @@ async def execute(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         response = await client.post(f"{AGENT_AI_URL}/execute", json={"actions": actions})
         response.raise_for_status()
         return response.json()["results"]
+
+
+async def ping() -> dict[str, Any]:
+    """Basic end-to-end connectivity check (backend -> Agent AI -> Ollama),
+    with no project-specific logic involved -- calls the agent's existing
+    /ping-llm endpoint, which already exists on Hugo's side today. This is
+    what unblocks palier 2: proving the backend can actually reach and
+    talk to the agent, ahead of the real /plan and /execute contract
+    above (which the agent doesn't implement yet)."""
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        response = await client.get(f"{AGENT_AI_URL}/ping-llm")
+        response.raise_for_status()
+        return response.json()
