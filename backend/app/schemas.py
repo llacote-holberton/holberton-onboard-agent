@@ -118,6 +118,7 @@ class AuditLogRead(BaseModel):
 
     id: str
     action_id: str
+    tool: str  # derived from AuditLog.action.tool -- see models.py's AuditLog.tool property
     status: ActionStatus
     note: Optional[str] = None
     timestamp: datetime

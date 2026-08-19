@@ -88,3 +88,23 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=_now)
 
     action = relationship("Action")
+
+    @property
+    def tool(self) -> str:
+        """Nom du tool concerne par cette ligne (ex. "create_onboarding_issue").
+
+        Pas de colonne dediee : derive de la relation `action` existante,
+        pour ne pas avoir a modifier tous les points d'ecriture de
+        log_audit_event() (non vus ici -- see routers/plans.py) juste pour
+        leur faire porter une info deja disponible via action_id. Cote
+        lecture, from_attributes=True (Pydantic) lit les proprietes Python
+        comme des attributs normaux -- voir AuditLogRead dans schemas.py.
+
+        Limite assumee : un acces .tool par ligne declenche potentiellement
+        une requete SQLAlchemy separee (lazy load de `action`) si la
+        session n'a pas deja cette Action en cache -- un N+1 sans gravite
+        vu le volume d'un projet de ce format, mais a garder en tete si
+        /audit devient lourd un jour (solution : eager-load avec
+        `joinedload(AuditLog.action)` dans la query du routeur).
+        """
+        return self.action.tool
