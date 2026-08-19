@@ -19,7 +19,9 @@ import smtplib
 from email.mime.text import MIMEText
 from email.utils import make_msgid
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 
 from domain_types import MessageRef
 from mcp_instance import mcp
@@ -84,11 +86,53 @@ def _send_email(recipients: list[str], subject: str, body: str) -> str:
 
 @mcp.tool
 def send_welcome_message(
-    employee_name: str,
-    team: str,
-    channel: Literal["team", "manager", "it"],
+    employee_name: Annotated[
+        str,
+        Field(description="Nom complet du nouveau collaborateur (ex: 'Léa Martin')."),
+    ],
+    team: Annotated[
+        str,
+        Field(
+            description=(
+                "Équipe d'accueil (ex: 'Backend') -- à extraire du contexte "
+                "donné par l'utilisateur. Ignoré si channel='it'."
+            )
+        ),
+    ],
+    channel: Annotated[
+        Literal["team", "manager", "it"],
+        Field(
+            description=(
+                "Qui reçoit le message : 'team' envoie à tous les membres de "
+                "`team`, 'manager' envoie uniquement au manager de `team`, "
+                "'it' envoie toujours à l'équipe IT fixe, indépendamment de "
+                "`team`. Par défaut 'team' si la demande ne précise pas de "
+                "destinataire particulier -- c'est l'interprétation la plus "
+                "probable d'un \"e-mail de bienvenue\" générique."
+            )
+        ),
+    ] = "team",
 ) -> MessageRef:
     """Send a welcome notification about a new hire joining the company.
+
+    NOTE (2026-08-19, repro observée en usage réel) : le LLM a omis
+    `channel` entièrement sur un appel réel (missing_argument), alors que
+    `employee_name`/`team` étaient corrects. `channel` a donc une valeur
+    par défaut ("team") ajoutée après cet incident, contrairement à
+    `team` sur create_employee_record (voir employee_db.py) qui reste
+    volontairement SANS défaut. Distinction assumée, pas une
+    contradiction : `team` sur create_employee_record est un FAIT sur la
+    personne (son équipe réelle) -- une valeur inventée écrirait un
+    mensonge en base, invisible dans le résumé d'approbation
+    (_SUMMARY_TEMPLATES ne montre pas `team` pour ce tool). `channel` ici
+    est un CHOIX de routage, pas un fait -- "team" est l'interprétation la
+    plus large et la plus sûre d'une demande générique, ET ce choix reste
+    visible dans le résumé d'approbation avant exécution
+    (_SUMMARY_TEMPLATES affiche bien `{channel}` pour ce tool, voir
+    agent/planner.py) -- l'humain peut donc encore refuser l'action si ce
+    n'était pas l'intention. Même famille de limite LLM que le `checklist`
+    par défaut de tracker.py et le `team` manquant d'hier -- pas une
+    garantie totale avec un petit modèle local.
 
     Args:
         employee_name: Full name of the new hire, used in the message body.
@@ -98,6 +142,7 @@ def send_welcome_message(
         channel: Who receives the message -- "team" sends to every member
             of `team`, "manager" sends only to `team`'s manager, "it"
             always sends to the fixed IT support team regardless of `team`.
+            Defaults to "team" if omitted.
 
     Returns:
         The Message-ID of the e-mail actually sent (MessageRef is a plain
