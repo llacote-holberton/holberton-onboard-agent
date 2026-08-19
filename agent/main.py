@@ -1,7 +1,10 @@
-# agent/main.py — ajout minimal pour palier 2
 from fastapi import FastAPI
+from pydantic import BaseModel
 import httpx
 import os
+
+import planner
+import executor
 
 app = FastAPI(title="Agent onboarding")
 
@@ -17,3 +20,22 @@ async def ping_llm():
             "stream": False
         })
         return r.json()
+
+class PlanRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/plan")
+async def plan(body: PlanRequest):
+    actions = await planner.build_plan(body.prompt)
+    return {"actions": actions}
+
+
+class ExecuteRequest(BaseModel):
+    actions: list[dict]
+
+
+@app.post("/execute")
+async def execute(body: ExecuteRequest):
+    results = await executor.execute_actions(body.actions)
+    return {"results": results}
