@@ -103,7 +103,68 @@ def test_summarize_create_employee_record_flags_a_missing_team_explicitly():
         "create_employee_record",
         {"name": "Camille", "role": "Développeuse Backend"},
     )
-    assert "non fourni" in summary
+    assert "team non fourni" in summary
+
+
+def test_summarize_names_the_missing_field_when_several_are_absent():
+    """Retour de Laurent (2026-08-20, test réel) : la première version du
+    placeholder générique ("(non fourni...)") ne dit pas QUEL champ manque
+    -- deux champs manquants sur la même ligne de résumé affichaient le
+    même texte deux fois, impossible à distinguer sans deviner. Le nom du
+    champ doit apparaître dans le texte."""
+    summary = planner._summarize(
+        "create_employee_record",
+        {"role": "Développeuse Backend"},
+    )
+    assert "name non fourni" in summary
+    assert "team non fourni" in summary
+
+
+# --- _summarize: known param aliases (e.g. employee_name -> name) --------
+#
+# Repro réelle (2026-08-20, même test que ci-dessus) : le LLM a appelé
+# create_employee_record avec `employee_name` (accepté à l'exécution grâce
+# à AliasChoices("name", "employee_name") côté employee_db.py) mais le
+# résumé affichait "name non fourni" -- l'info était bien là, juste sous
+# une autre clé que _summarize ne connaissait pas encore. Ces tests
+# verrouillent le correctif (_PARAM_ALIASES / _resolve_known_aliases).
+
+
+def test_summarize_resolves_employee_name_alias_to_name():
+    summary = planner._summarize(
+        "create_employee_record",
+        {"employee_name": "Camille", "role": "Développeuse Backend", "team": "Backend"},
+    )
+    assert "Camille" in summary
+    assert "non fourni" not in summary
+
+
+def test_summarize_prefers_canonical_name_over_alias_if_both_provided():
+    """Cas limite improbable (le LLM ne devrait jamais fournir les deux),
+    mais le comportement doit rester défini : la clé canonique gagne,
+    cohérent avec ce que ferait Pydantic côté mcp-server si les deux étaient
+    réellement passées à l'exécution."""
+    summary = planner._summarize(
+        "create_employee_record",
+        {
+            "name": "Camille",
+            "employee_name": "Ignoré",
+            "role": "Développeuse Backend",
+            "team": "Backend",
+        },
+    )
+    assert "Camille" in summary
+    assert "Ignoré" not in summary
+
+
+def test_summarize_does_not_resolve_aliases_for_other_tools():
+    """_PARAM_ALIASES est scopé par tool -- pas d'effet de bord sur un tool
+    qui n'a pas ce genre d'alias déclaré côté mcp-server."""
+    summary = planner._summarize(
+        "create_onboarding_issue",
+        {"employee_name": "Camille", "start_date": "2026-08-24"},
+    )
+    assert "Camille" in summary
 
 
 def test_internal_only_tools_set_matches_the_undo_dispatch_table():

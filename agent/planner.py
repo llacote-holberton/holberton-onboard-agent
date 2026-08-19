@@ -73,15 +73,64 @@ _INTERNAL_ONLY_TOOLS = {
 }
 
 
+# Alias de paramètre connus, par tool -- miroir de ce que chaque tool
+# déclare côté mcp-server via Field(validation_alias=AliasChoices(...))
+# (aujourd'hui : `name`/`employee_name` sur create_employee_record, voir
+# mcp_server/tools/employee_db.py). Duplication assumée, même famille que
+# _SUMMARY_TEMPLATES et _INTERNAL_ONLY_TOOLS ci-dessus : le schéma JSON que
+# list_tools() renvoie n'expose QUE le nom canonique ("name"), jamais
+# l'alias (confirmé -- voir mcp_server/tests/test_employee_db.py::
+# test_create_employee_record_schema_does_not_expose_employee_name), donc
+# _summarize n'a aucun moyen de le découvrir dynamiquement à partir du
+# schéma seul. À tenir à jour à la main si un alias est ajouté ou retiré
+# côté mcp-server.
+#
+# Repro réelle (2026-08-20) qui a révélé le besoin de cette table : le LLM
+# a appelé create_employee_record avec `employee_name` (accepté sans
+# problème à l'exécution grâce à l'alias) mais le résumé affichait "name
+# non fourni" -- alors que l'info était bien là, juste sous une autre clé.
+# Résultat trompeur pour l'humain qui approuve : ça peut faire refuser une
+# action qui aurait pourtant fonctionné.
+_PARAM_ALIASES = {
+    "create_employee_record": {"name": ("employee_name",)},
+}
+
+
+def _resolve_known_aliases(tool_name: str, params: dict) -> dict:
+    """Complète `params` avec la clé canonique quand seule une clé alias
+    connue a été fournie, AVANT de construire le résumé -- voir
+    _PARAM_ALIASES ci-dessus. Ne modifie jamais le dict original (c'est
+    celui qui est aussi renvoyé tel quel dans l'Action, params bruts
+    inclus -- voir build_plan)."""
+    aliases = _PARAM_ALIASES.get(tool_name)
+    if not aliases:
+        return params
+    resolved = dict(params)
+    for canonical, alt_keys in aliases.items():
+        if canonical not in resolved:
+            for alt in alt_keys:
+                if alt in resolved:
+                    resolved[canonical] = resolved[alt]
+                    break
+    return resolved
+
+
 class _MissingParamAsPlaceholder(dict):
     """Utilisé par _summarize ci-dessous : quand un champ du template n'a
     pas été fourni par le LLM au moment du plan (ex: `team` omis sur
     create_employee_record), affiche un texte explicite au lieu de faire
     échouer le format() -- voir la note 2026-08-20 juste en dessous pour
-    pourquoi c'est important, pas juste cosmétique."""
+    pourquoi c'est important, pas juste cosmétique.
+
+    Le nom du champ manquant est inclus dans le texte (pas juste "non
+    fourni" générique) -- retour direct de Laurent sur la première version
+    de ce message : deux champs manquants sur la même ligne de résumé
+    (ex: `name` ET `team` sur create_employee_record) affichaient le même
+    texte générique deux fois, impossible de savoir lequel était lequel
+    sans deviner depuis la position dans la phrase."""
 
     def __missing__(self, key):
-        return "(non fourni — une valeur par défaut sera utilisée à l'exécution)"
+        return f"({key} non fourni — une valeur par défaut sera utilisée à l'exécution)"
 
 
 def _summarize(tool_name: str, params: dict) -> str:
@@ -99,10 +148,16 @@ def _summarize(tool_name: str, params: dict) -> str:
     # ça briserait cette garantie en silence. `_MissingParamAsPlaceholder`
     # comble spécifiquement ce trou : un champ absent du template s'affiche
     # explicitement comme tel, plutôt que de disparaître du résumé.
+    #
+    # `_resolve_known_aliases` doit passer AVANT : sinon un champ fourni
+    # sous un alias connu (ex: `employee_name` au lieu de `name`) serait lui
+    # aussi affiché comme "non fourni", ce qui serait faux -- voir
+    # _PARAM_ALIASES ci-dessus pour la repro qui a motivé ce correctif.
+    params_for_summary = _resolve_known_aliases(tool_name, params)
     template = _SUMMARY_TEMPLATES.get(tool_name)
     if template:
         try:
-            return template.format_map(_MissingParamAsPlaceholder(params))
+            return template.format_map(_MissingParamAsPlaceholder(params_for_summary))
         except (IndexError, ValueError):
             pass
     # Fallback si le template ne correspond plus aux vrais paramètres du
