@@ -17,6 +17,18 @@ absolu, pas `/app/data` en dur) -- sans effet en Docker, où
 docker-compose.yml fixe explicitement DATA_DIR=/app/data, mais nécessaire
 pour que les scripts autonomes (scripts/test_*.py) et les tests unitaires
 fonctionnent aussi hors conteneur.
+
+RÉCONCILIATION 2026-08-20 (Laurent) -- association plan_id : le fichier
+généré est maintenant rangé sous DOCUMENTS_DIR/<plan_id>/ quand un plan_id
+est fourni (sinon comportement inchangé, à plat sous DOCUMENTS_DIR), pour
+pouvoir retrouver/télécharger les fichiers d'un plan donné depuis le
+frontend (voir backend/app/routers/actions.py::download_action_file).
+Le paramètre `plan_id` est décrit au LLM comme réservé au système -- le
+backend écrase toujours la valeur avant dispatch réel (voir
+backend/app/routers/plans.py::execute_plan(), même principe que la
+validation d'équipe côté agent/planner.py::_flag_unknown_teams : ne
+jamais faire confiance au LLM pour une valeur critique pour la
+correction).
 """
 
 import os
@@ -34,6 +46,21 @@ from domain_types import DocumentRef
 # sans recharger le module.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data")).resolve()
 DOCUMENTS_DIR = DATA_DIR / "documents"
+
+
+def _resolve_target_dir(plan_id: str | None) -> Path:
+    """Sans plan_id : comportement historique, à plat sous DOCUMENTS_DIR.
+    Avec plan_id : sous-dossier dédié, pour que les fichiers de plans
+    différents ne se mélangent/écrasent jamais et puissent être retrouvés
+    un par un. Rejette toute tentative de path traversal (un plan_id ne
+    devrait normalement jamais contenir '/' ou '..', mais le backend
+    écrase cette valeur de toute façon -- garde-fou en profondeur, pas la
+    seule ligne de défense)."""
+    if not plan_id:
+        return DOCUMENTS_DIR
+    if "/" in plan_id or "\\" in plan_id or ".." in plan_id:
+        raise ValueError(f"plan_id invalide : '{plan_id}'.")
+    return DOCUMENTS_DIR / plan_id
 
 _TEMPLATES = {
     "welcome_pack": Template("""<!DOCTYPE html>
@@ -84,6 +111,16 @@ def generate_handbook(
             )
         ),
     ],
+    plan_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Réservé au système -- NE JAMAIS renseigner ce champ "
+                "toi-même, la valeur que tu fournirais serait de toute "
+                "façon ignorée et remplacée."
+            )
+        ),
+    ] = None,
 ) -> DocumentRef:
     """Génère un document d'accueil (HTML) à partir d'un gabarit, pour le
     nouveau collaborateur identifié par employee_id. Nécessite que la
@@ -101,9 +138,10 @@ def generate_handbook(
             f"Gabarit inconnu : '{template}'. Gabarits valides : {sorted(_TEMPLATES)}."
         )
 
-    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    target_dir = _resolve_target_dir(plan_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{template}_{employee_id}.html"
-    filepath = DOCUMENTS_DIR / filename
+    filepath = target_dir / filename
 
     html = tpl.render(employee_id=employee_id)
     filepath.write_text(html, encoding="utf-8")

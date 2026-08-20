@@ -55,3 +55,13 @@ CALENDAR_DIR = DATA_DIR / "calendar"
 # OLLAMA_CALL_TIMEOUT_SECONDS + 15s.
 OLLAMA_CALL_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_CALL_TIMEOUT_SECONDS", 110))
 AGENT_PLAN_TIMEOUT_SECONDS = OLLAMA_CALL_TIMEOUT_SECONDS + 15
+
+# --- Plan/download association (RECONCILIATION 2026-08-20, Laurent) ------
+# Tools whose result is a generated file on disk (see mcp_server/tools/
+# documents.py, mcp_server/tools/event_calendar.py) rather than a plain
+# record. Used in two places: routers/plans.py::execute_plan() injects the
+# real plan_id into these tools' params before dispatch (overwriting
+# whatever the LLM may have proposed -- see those tools' plan_id parameter
+# docstring), and routers/actions.py::download_action_file() only allows
+# downloading the result of a tool listed here.
+FILE_GENERATING_TOOLS = {"generate_handbook", "create_calendar_event"}

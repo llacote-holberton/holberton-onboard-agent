@@ -31,6 +31,12 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000")
 # _OLLAMA_CALL_TIMEOUT comment for the full rationale.
 _PLAN_GENERATION_TIMEOUT = int(os.environ.get("OLLAMA_CALL_TIMEOUT_SECONDS", "110")) + 30
 
+# RECONCILIATION 2026-08-20 (Laurent) -- must match backend/app/config.py::
+# FILE_GENERATING_TOOLS exactly; kept as a separate constant here rather
+# than fetched from the backend because it only decides which actions get
+# a download button, not any correctness-critical behaviour.
+_FILE_GENERATING_TOOLS = {"generate_handbook", "create_calendar_event"}
+
 
 def describe_error(exc: Exception) -> str:
     """requests' HTTPError.__str__() is just the generic status line
@@ -95,6 +101,39 @@ def render_audit_trace(entries: list[dict]) -> None:
         for entry in entries
     ]
     st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
+def render_downloadable_files(actions: list[dict]) -> None:
+    """RECONCILIATION 2026-08-20 (Laurent) -- one download button per
+    executed file-generating action (see backend/app/routers/actions.py::
+    download_action_file). BACKEND_URL only resolves inside the docker
+    network, not from the end user's browser, so the frontend must fetch
+    the bytes itself and hand them to st.download_button rather than link
+    directly to the backend."""
+    downloadable = [
+        a for a in actions if a["tool"] in _FILE_GENERATING_TOOLS and a["status"] == "executed"
+    ]
+    if not downloadable:
+        return
+
+    st.markdown("**📎 Fichiers générés**")
+    for action in downloadable:
+        try:
+            response = requests.get(f"{BACKEND_URL}/actions/{action['id']}/download", timeout=30)
+            response.raise_for_status()
+            filename = None
+            disposition = response.headers.get("content-disposition", "")
+            if "filename=" in disposition:
+                filename = disposition.split("filename=")[-1].strip('"')
+            st.download_button(
+                f"⬇️ {action['summary']}",
+                data=response.content,
+                file_name=filename or f"{action['id']}.bin",
+                mime=response.headers.get("content-type", "application/octet-stream"),
+                key=f"download_{action['id']}",
+            )
+        except Exception as exc:
+            st.caption(f"⚠️ Fichier de « {action['summary']} » indisponible : {describe_error(exc)}")
 
 
 st.set_page_config(page_title="Onboarding Agent", page_icon="✅", layout="centered")
@@ -212,8 +251,21 @@ if plan:
                     executed_count = sum(1 for r in results if r["status"] == "executed")
                     st.success(f"{executed_count} action(s) exécutée(s) sur {len(results)}.")
                     st.session_state.trace = fetch_audit_trace(plan["id"])
+
+                    # BUG FIX 2026-08-20 (Laurent) -- st.session_state.plan
+                    # was never refreshed after execution: it still held the
+                    # pre-execution snapshot (every action "approved", no
+                    # result), so downstream UI (download buttons here, but
+                    # also just re-reading the plan) never saw the real
+                    # post-execution status/result. Re-fetch before rerun.
+                    refreshed = requests.get(f"{BACKEND_URL}/plans/{plan['id']}", timeout=15)
+                    refreshed.raise_for_status()
+                    st.session_state.plan = refreshed.json()
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Échec de l'exécution : {describe_error(exc)}")
+
+        render_downloadable_files(plan["actions"])
 
         if st.session_state.trace is not None:
             st.subheader("Traçabilité de ce plan")

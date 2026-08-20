@@ -6,6 +6,8 @@ tests utilisent tmp_path pour rediriger DATA_DIR sans toucher au vrai
 répertoire data/ du projet -- même pattern que test_documents.py.
 """
 
+from pathlib import Path
+
 import pytest
 
 from tools import event_calendar
@@ -90,3 +92,31 @@ def test_create_calendar_event_non_positive_duration_raises_value_error():
 def test_create_calendar_event_negative_duration_raises_value_error():
     with pytest.raises(ValueError, match="positive"):
         _call(title="x", event_date="2026-08-25", duration_minutes=-10, attendees=[])
+
+
+# --- plan_id association (RECONCILIATION 2026-08-20, Laurent) -----------
+# Même pattern que test_documents.py -- voir ce fichier pour le détail des
+# cas couverts.
+
+
+def test_create_calendar_event_without_plan_id_writes_flat_under_calendar_dir():
+    path = _call(title="x", event_date="2026-08-25", duration_minutes=30, attendees=[])
+
+    assert Path(path).parent == event_calendar.CALENDAR_DIR
+
+
+def test_create_calendar_event_with_plan_id_writes_under_a_subfolder():
+    path = _call(
+        title="x", event_date="2026-08-25", duration_minutes=30, attendees=[], plan_id="plan-abc"
+    )
+
+    assert Path(path).parent == event_calendar.CALENDAR_DIR / "plan-abc"
+    assert Path(path).is_file()
+
+
+def test_create_calendar_event_plan_id_path_traversal_rejected():
+    with pytest.raises(ValueError, match="plan_id invalide"):
+        _call(
+            title="x", event_date="2026-08-25", duration_minutes=30, attendees=[],
+            plan_id="../../etc",
+        )

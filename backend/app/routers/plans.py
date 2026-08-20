@@ -8,6 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import FILE_GENERATING_TOOLS
 from app.database import get_db
 from app.models import Action, Plan
 from app.schemas import ExecuteResult, PlanCreateRequest, PlanRead
@@ -102,8 +103,29 @@ async def execute_plan(plan_id: str, db: Session = Depends(get_db)):
 
     if to_dispatch:
         try:
+            # RECONCILIATION 2026-08-20 (Laurent) -- plan_id association:
+            # for file-generating tools (see app.config.FILE_GENERATING_
+            # TOOLS), always inject the REAL plan_id here, overwriting
+            # whatever the LLM/agent may have proposed in params -- same
+            # "never trust the LLM for correctness-critical values" pattern
+            # already used for team validation (see agent/planner.py::
+            # _flag_unknown_teams). This is what lets the generated file be
+            # found again later for download (see routers/actions.py::
+            # download_action_file and mcp_server/tools/documents.py /
+            # event_calendar.py's plan_id-scoped storage).
             dispatched = await agent_client.execute(
-                [{"action_id": a.id, "tool": a.tool, "params": a.params} for a in to_dispatch]
+                [
+                    {
+                        "action_id": a.id,
+                        "tool": a.tool,
+                        "params": (
+                            {**a.params, "plan_id": plan_id}
+                            if a.tool in FILE_GENERATING_TOOLS
+                            else a.params
+                        ),
+                    }
+                    for a in to_dispatch
+                ]
             )
         except httpx.HTTPError as exc:
             # Actions already resolved as duplicates above are rolled back

@@ -24,6 +24,14 @@ lisible en cas de format inattendu. (2) DATA_DIR aligné sur la convention
 établie par employee_db.py (`./data` résolu en absolu, pas `/app/data` en
 dur) -- sans effet en Docker (docker-compose.yml fixe DATA_DIR
 explicitement), nécessaire pour les scripts/tests hors conteneur.
+
+RÉCONCILIATION 2026-08-20 (Laurent) -- association plan_id : même
+mécanisme que tools/documents.py (voir sa docstring de module pour le
+détail) -- le fichier .ics est rangé sous CALENDAR_DIR/<plan_id>/ quand
+un plan_id est fourni. `_resolve_target_dir` est dupliqué ici plutôt que
+partagé avec documents.py, par cohérence avec la convention déjà en
+place dans ce module (DATA_DIR/CALENDAR_DIR déjà dupliqués eux aussi
+plutôt que mutualisés).
 """
 
 import os
@@ -40,6 +48,15 @@ from domain_types import EventRef
 # Même convention que employee_db.py::DATA_DIR.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data")).resolve()
 CALENDAR_DIR = DATA_DIR / "calendar"
+
+
+def _resolve_target_dir(plan_id: str | None) -> Path:
+    """Voir tools/documents.py::_resolve_target_dir -- même logique."""
+    if not plan_id:
+        return CALENDAR_DIR
+    if "/" in plan_id or "\\" in plan_id or ".." in plan_id:
+        raise ValueError(f"plan_id invalide : '{plan_id}'.")
+    return CALENDAR_DIR / plan_id
 
 # Heure de début par défaut pour les événements générés (pas de créneau
 # horaire précisé par le LLM à ce stade -- paramètre de contenu, valeur
@@ -96,6 +113,16 @@ def create_calendar_event(
             )
         ),
     ],
+    plan_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Réservé au système -- NE JAMAIS renseigner ce champ "
+                "toi-même, la valeur que tu fournirais serait de toute "
+                "façon ignorée et remplacée."
+            )
+        ),
+    ] = None,
 ) -> EventRef:
     """Crée un événement calendrier (fichier .ics), typiquement pour une
     réunion d'accueil ou une présentation d'équipe. À utiliser seulement
@@ -132,9 +159,10 @@ def create_calendar_event(
         "END:VCALENDAR\r\n"
     )
 
-    CALENDAR_DIR.mkdir(parents=True, exist_ok=True)
+    target_dir = _resolve_target_dir(plan_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"event_{uid}.ics"
-    filepath = CALENDAR_DIR / filename
+    filepath = target_dir / filename
     filepath.write_text(ics_content, encoding="utf-8")
 
     return str(filepath)
