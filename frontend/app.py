@@ -95,6 +95,25 @@ if "plan" not in st.session_state:
 if "trace" not in st.session_state:
     st.session_state.trace = None
 
+# --- Persistance via l'URL --------------------------------------------
+# st.session_state est vidé à chaque VRAI rechargement de page (F5, nouvel
+# onglet) -- Streamlit recrée une session neuve, pas seulement un rerun.
+# On stocke donc l'id du plan courant dans l'URL (st.query_params), qui
+# lui survit à un rechargement complet. Au chargement, si un plan_id est
+# présent dans l'URL mais qu'on n'a pas encore le plan en session_state,
+# on va le rechercher côté backend (GET /plans/{id}, déjà existant) plutôt
+# que de forcer l'utilisateur à le recoller à la main.
+if st.session_state.plan is None:
+    url_plan_id = st.query_params.get("plan_id")
+    if url_plan_id:
+        try:
+            response = requests.get(f"{BACKEND_URL}/plans/{url_plan_id}", timeout=15)
+            response.raise_for_status()
+            st.session_state.plan = response.json()
+            st.session_state.trace = fetch_audit_trace(url_plan_id)
+        except Exception as exc:
+            st.warning(f"Impossible de recharger le plan depuis l'URL : {describe_error(exc)}")
+
 st.title("Holberton — :blue[Onboarding Agent]")
 
 # --- 1. Prompt -------------------------------------------------------------
@@ -114,6 +133,9 @@ if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
             response.raise_for_status()
             st.session_state.plan = response.json()
             st.session_state.trace = None
+            # Fixe l'id du plan dans l'URL -- survit à un rechargement,
+            # contrairement à session_state seul.
+            st.query_params["plan_id"] = st.session_state.plan["id"]
         except Exception as exc:
             st.error(f"Impossible de générer le plan : {describe_error(exc)}")
             st.session_state.plan = None
@@ -193,6 +215,7 @@ with st.expander("Retrouver la trace d'un plan précédent"):
         entries = fetch_audit_trace(lookup_plan_id.strip())
         if entries is not None:
             render_audit_trace(entries)
+            st.query_params["plan_id"] = lookup_plan_id.strip()
 
 # --- Outils autorisés (lecture seule) --------------------------------
 
