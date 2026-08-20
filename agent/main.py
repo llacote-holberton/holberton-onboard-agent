@@ -28,14 +28,23 @@ async def ping():
     return {"status": "agent alive"}
 
 
+@app.get("/tools/permissions")
+async def tools_permissions():
+    """Expose la resource MCP "config://allowed-tools" pour le panneau
+    lecture-seule du frontend (via un proxy backend, voir ARCHITECTURE.md :
+    le frontend ne parle jamais directement à l'agent)."""
+    _, permissions = await planner._discover_tool_permissions()
+    return permissions
+
+
 class PlanRequest(BaseModel):
     prompt: str
 
 
 @app.post("/plan")
 async def plan(body: PlanRequest):
-    actions = await planner.build_plan(body.prompt)
-    return {"actions": actions}
+    actions, notice = await planner.build_plan(body.prompt)
+    return {"actions": actions, "clarification": notice}
 
 
 class ExecuteRequest(BaseModel):
