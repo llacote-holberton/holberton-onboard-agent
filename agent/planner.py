@@ -54,7 +54,7 @@ _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 # Ollama pour un seul /plan (exploration + relances de construction du
 # plan confondues). Au-delà, on finalise avec ce qu'on a accumulé,
 # plutôt que de laisser l'agent tourner indéfiniment.
-_MAX_TURNS = 6
+_MAX_TURNS = 8
 
 # Tools en LECTURE SEULE, sans aucun effet de bord, que le planificateur
 # exécute lui-même automatiquement pendant la boucle (contrairement aux
@@ -220,6 +220,7 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 assistant_message = data.get("message", {})
                 tool_calls = assistant_message.get("tool_calls", [])
 
+                print(f"[TOUR {turn + 1}] tools appelés: {[c['function']['name'] for c in tool_calls]}")
 
                 if not tool_calls:
                     # Réponse finale en texte -- soit rien à proposer du
@@ -263,9 +264,37 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
 
                 if action_calls and not exploratory_calls:
                     # Au moins une action proposée ce tour, rien à
-                    # explorer en parallèle : on demande explicitement
-                    # s'il reste autre chose avant de finaliser.
-                    messages.append({"role": "user", "content": _NUDGE})
+                    # explorer en parallèle : relance CIBLÉE plutôt que
+                    # générique -- énumère explicitement les tools pas
+                    # encore utilisés, avec leur description. Un petit
+                    # modèle répond plus fiablement à une checklist
+                    # concrète qu'à un simple rappel ouvert ("autre
+                    # chose ?"), qui laissait trop souvent le modèle
+                    # s'arrêter avant d'avoir couvert tous les outils
+                    # pertinents (repro observée : create_calendar_event
+                    # régulièrement omis même quand une réunion était
+                    # explicitement demandée dans un plan multi-actions).
+                    used_names = {c["function"]["name"] for c in collected_action_calls}
+                    remaining = {
+                        name: t for name, t in functional_tools.items()
+                        if name not in used_names and name not in _EXPLORATORY_TOOLS
+                    }
+                    if remaining:
+                        remaining_list = "\n".join(
+                            f"- {name} : {t.description or ''}"
+                            for name, t in remaining.items()
+                        )
+                        nudge = (
+                            "Voici les outils que tu n'as pas encore utilisés pour ce "
+                            f"plan :\n{remaining_list}\n\n"
+                            "Est-ce que l'un d'eux est pertinent pour compléter la "
+                            "demande initiale ? Si oui, appelle-le maintenant. Si "
+                            "aucun n'est pertinent, réponds uniquement par le mot "
+                            "\"Terminé\", sans appeler aucun outil."
+                        )
+                    else:
+                        nudge = _NUDGE
+                    messages.append({"role": "user", "content": nudge})
                 # Sinon (exploration seule, ou mélange) -> on reboucle
                 # directement, le modèle reprend avec le contexte enrichi.
 
