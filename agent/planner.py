@@ -73,6 +73,32 @@ n'exécute jamais rien à effet de bord, donc aucun risque à le laisser
 "choisir" un tool non autorisé. Le tri autorisé/exclu se fait après coup,
 de façon déterministe, dans build_plan(), plutôt que de compter sur le
 modèle pour décrire correctement en texte ce qu'il n'a pas pu faire.
+
+RECONCILIATION ÉTAPE 2 (2026-08-20, Laurent) : port du mécanisme de
+relance CIBLÉE de Feature/palier3 (commit 36add53, Hugo), par-dessus
+CORRECTIF #2 ci-dessus. Le _NUDGE générique ("autre chose ?") laissait
+trop souvent le modèle s'arrêter avant d'avoir couvert tous les outils
+pertinents (repro observée côté Hugo : create_calendar_event
+régulièrement omis même quand une réunion était explicitement demandée
+dans un plan multi-actions). La relance liste désormais explicitement,
+nom + description, les tools fonctionnels pas encore utilisés pour ce
+plan -- en excluant toujours les tools exploratoires de cette liste
+(cohérent avec CORRECTIF #2 : list_teams n'est de toute façon jamais
+proposé au modèle). _NUDGE générique conservé comme repli si tous les
+tools fonctionnels ont déjà été utilisés. _MAX_TURNS passe de 6 à 8 pour
+la même raison : avec 5 tools fonctionnels, le budget précédent (6)
+correspondait exactement au cas nominal (5 tours d'action + 1 tour de
+conclusion), sans aucune marge pour une relance supplémentaire ou un
+tour "perdu" -- ce qui pouvait à lui seul expliquer l'omission observée
+d'un outil pertinent en fin de plan.
+
+RECONCILIATION ÉTAPE 4 (2026-08-20, Laurent) : retrait des deux print()
+de debug (tools appelés par tour, texte final à l'arrêt) gardés jusqu'ici
+pour la phase de test d'intégration en conditions réelles -- voir revue
+critique, section debug prints. Plus nécessaires maintenant que les
+étapes 1 à 3 sont validées par les tests unitaires ET testées en
+conditions réelles ; à retirer d'un coup plutôt que de les laisser
+traîner "temporairement" indéfiniment.
 """
 
 import json
@@ -87,12 +113,37 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
+# RECONCILIATION ÉTAPE 3 (2026-08-20, Laurent) -- coordination de la
+# chaîne de timeouts sur les trois couches HTTP (frontend -> backend ->
+# agent -> Ollama). Ce timeout-ci est la couche la PLUS À L'INTÉRIEUR
+# (un seul appel Ollama) -- point de départ de toute la chaîne, chaque
+# couche englobante ajoutant +15s de marge par-dessus celle qu'elle
+# enveloppe directement (voir backend/app/services/agent_client.py::
+# _TIMEOUT et frontend/app.py, POST /plans). Valeur inchangée (110) --
+# déjà identique entre dev_laurent et Feature/palier3, donc rien à
+# arbitrer ici, seulement à documenter comme référence commune.
+#
+# Reste un angle mort assumé (accepté pour l'instant, faute de temps) :
+# ce timeout borne UN SEUL appel Ollama, pas la durée totale de
+# build_plan(), qui peut en théorie enchaîner jusqu'à _MAX_TURNS appels
+# réussis (donc chacun sous ce plafond, mais cumulés). Le pire cas
+# théorique (_MAX_TURNS x 110s) dépasserait largement la marge donnée à
+# la couche backend -- en pratique, un /plan qui enchaînerait autant de
+# tours proches de 110s chacun échouerait de toute façon bruyamment
+# (ReadTimeout explicite) plutôt que silencieusement, donc acceptable
+# comme compromis tant qu'on n'a pas mesuré de latence réelle multi-tours.
+_OLLAMA_CALL_TIMEOUT = 110
+
 # Garde-fou anti-boucle-infinie : nombre maximum d'allers-retours avec
 # Ollama pour un seul /plan (exploration + relances de construction du
 # plan confondues). Au-delà, on finalise avec ce qu'on a accumulé (plus
 # une notice explicite si rien n'a été collecté -- voir build_plan),
 # plutôt que de laisser l'agent tourner indéfiniment.
-_MAX_TURNS = 6
+#
+# 8 (au lieu de 6) depuis la RECONCILIATION ÉTAPE 2 -- voir docstring de
+# module : avec 5 tools fonctionnels, 6 tours ne laissait aucune marge
+# au-delà du cas nominal (5 actions + 1 conclusion).
+_MAX_TURNS = 8
 
 # Tools en LECTURE SEULE, sans aucun effet de bord, que le planificateur
 # exécute lui-même automatiquement pendant la boucle (contrairement aux
@@ -390,7 +441,7 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     mcp_client_cm = None
     mcp_client = None
     try:
-        async with httpx.AsyncClient(timeout=110) as client:
+        async with httpx.AsyncClient(timeout=_OLLAMA_CALL_TIMEOUT) as client:
             for turn in range(_MAX_TURNS):
                 r = await client.post(
                     f"{OLLAMA_API_BASE}/api/chat",
@@ -406,9 +457,6 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 r.raise_for_status()
                 data = r.json()
 
-                print(f"[DEBUG] tour {turn} -- {len(ollama_tools)} tools envoyés : {[t['function']['name'] for t in ollama_tools]}", flush=True)
-                print(f"[DEBUG] tour {turn} -- réponse brute du modèle : {data.get('message', {})}", flush=True)
-
                 assistant_message = data.get("message", {})
                 tool_calls = assistant_message.get("tool_calls", [])
 
@@ -417,9 +465,7 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                     # tout (premier tour), soit "Terminé" après relance.
                     final_text = assistant_message.get("content")
                     concluded = True
-                    print(f"[TOUR {turn + 1}] -> arrêt, texte final: {final_text!r}")
                     break
-
 
                 messages.append(assistant_message)
 
@@ -462,9 +508,48 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
 
                 if action_calls and not exploratory_calls:
                     # Au moins une action proposée ce tour, rien à
-                    # explorer en parallèle : on demande explicitement
-                    # s'il reste autre chose avant de finaliser.
-                    messages.append({"role": "user", "content": _NUDGE})
+                    # explorer en parallèle : relance CIBLÉE plutôt que
+                    # générique -- énumère explicitement les tools pas
+                    # encore utilisés, avec leur description. Un petit
+                    # modèle répond plus fiablement à une checklist
+                    # concrète qu'à un simple rappel ouvert ("autre
+                    # chose ?"), qui laissait trop souvent le modèle
+                    # s'arrêter avant d'avoir couvert tous les outils
+                    # pertinents (repro observée : create_calendar_event
+                    # régulièrement omis même quand une réunion était
+                    # explicitement demandée dans un plan multi-actions).
+                    # Voir RECONCILIATION ÉTAPE 2 dans le docstring de
+                    # module.
+                    #
+                    # On énumère à partir de `ollama_tools` (déjà au
+                    # format tool-calling d'Ollama, name+description
+                    # inclus) plutôt que de re-dériver `functional_tools`
+                    # ici : `ollama_tools` exclut déjà structurellement
+                    # les tools exploratoires (CORRECTIF #2), donc aucun
+                    # filtre `_EXPLORATORY_TOOLS` supplémentaire n'est
+                    # nécessaire, et la signature de _build_prompt_context
+                    # (donc les tests qui la mockent) reste inchangée.
+                    used_names = {c["function"]["name"] for c in collected_action_calls}
+                    remaining = [
+                        t["function"] for t in ollama_tools
+                        if t["function"]["name"] not in used_names
+                    ]
+                    if remaining:
+                        remaining_list = "\n".join(
+                            f"- {t['name']} : {t['description'] or ''}"
+                            for t in remaining
+                        )
+                        nudge = (
+                            "Voici les outils que tu n'as pas encore utilisés pour ce "
+                            f"plan :\n{remaining_list}\n\n"
+                            "Est-ce que l'un d'eux est pertinent pour compléter la "
+                            "demande initiale ? Si oui, appelle-le maintenant. Si "
+                            "aucun n'est pertinent, réponds uniquement par le mot "
+                            "\"Terminé\", sans appeler aucun outil."
+                        )
+                    else:
+                        nudge = _NUDGE
+                    messages.append({"role": "user", "content": nudge})
                 # Sinon (exploration seule, ou mélange) -> on reboucle
                 # directement, le modèle reprend avec le contexte enrichi.
     finally:
