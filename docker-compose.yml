@@ -97,7 +97,9 @@ services:
       - "${BACKEND_PORT:-8000}:${BACKEND_PORT:-8000}"
     environment:
       - BACKEND_PORT=${BACKEND_PORT:-8000}
-      - DATABASE_URL=sqlite:///${DATA_DIR:-/app/data}/onboarding.db
+      # DATA_DIR was missing and must be to ensure all app components
+      #   target the same directory.
+      - DATA_DIR=${DATA_DIR:-/app/data}
       - AGENT_AI_URL=http://agent:${AGENT_PORT:-8100}
       - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT:-8200}
       - LOG_LEVEL=info
