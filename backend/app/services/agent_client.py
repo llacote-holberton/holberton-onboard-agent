@@ -48,16 +48,21 @@ _PING_LLM_TIMEOUT = httpx.Timeout(90.0)
 
 async def plan(prompt: str) -> dict[str, Any]:
     """Ask the Agent AI to turn a free-text prompt into a list of proposed
-    actions. Returns {"actions": [...], "clarification": str | None} --
-    clarification is the model's own explanation when it proposed no
-    action at all (e.g. a needed tool isn't allowed, see mcp_server/
-    resources.py, or essential info is missing)."""
+    actions. Returns {"actions": [...], "excluded_actions": [...],
+    "clarification": str | None}:
+    - actions: allowed tools the model chose to call.
+    - excluded_actions: NOT-allowed tools the model would have called,
+      same shape plus a "note" explaining why it can't run (see
+      mcp_server/resources.py, agent/planner.py).
+    - clarification: the model's own text when neither actions nor
+      excluded_actions were produced at all (e.g. off-topic prompt)."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{AGENT_AI_URL}/plan", json={"prompt": prompt})
         response.raise_for_status()
         data = response.json()
         return {
             "actions": data["actions"],
+            "excluded_actions": data.get("excluded_actions", []),
             "clarification": data.get("clarification"),
         }
 

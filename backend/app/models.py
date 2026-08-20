@@ -31,10 +31,12 @@ class Plan(Base):
     status = Column(String, nullable=False, default="in_progress")
     # in_progress | completed
     clarification = Column(Text, nullable=True)
-    # Texte du modèle quand il n'a proposé aucune action -- ex. un outil
-    # nécessaire n'est pas autorisé (voir mcp_server/resources.py), ou une
-    # information indispensable manque. None dans le cas normal où des
-    # actions ont été proposées.
+    # Texte du modèle quand ni actions ni excluded_actions n'ont été
+    # produits (ex: demande hors-scope). None sinon.
+    excluded_actions = Column(JSON, nullable=False, default=list)
+    # Outils NON autorisés que le modèle aurait appelés si rien ne l'en
+    # empêchait -- même format que Action (tool/params/summary), plus une
+    # note explicative. Voir mcp_server/resources.py, agent/planner.py.
     created_at = Column(DateTime, default=_now)
 
     actions = relationship("Action", back_populates="plan", cascade="all, delete-orphan")
