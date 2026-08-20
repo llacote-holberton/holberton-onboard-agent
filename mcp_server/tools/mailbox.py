@@ -13,6 +13,7 @@ e-mail actually sent, which is a real, stable identifier (as opposed to a
 made-up summary string) and is what MailHog itself indexes messages by.
 """
 
+
 import json
 import os
 import smtplib
@@ -23,6 +24,7 @@ from typing import Literal
 
 from domain_types import MessageRef
 from mcp_instance import mcp
+
 
 # Resolved relative to this file, not the process cwd -- works no matter
 # where mcp-server is actually started from.
