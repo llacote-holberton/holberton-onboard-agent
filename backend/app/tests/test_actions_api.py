@@ -13,13 +13,21 @@ from app.models import Action, Plan
 
 def _make_action(db_session, **overrides):
     plan = Plan(prompt="onboard Jane Doe")
-    action = Action(
-        tool="create_onboarding_issue",
-        params={"employee": "Jane Doe"},
-        summary="Create the onboarding issue",
-        idempotency_key="key-1",
-        **overrides,
-    )
+    # RECONCILIATION 2026-08-20 (Laurent) -- merge defaults and overrides
+    # into a single dict before constructing Action(): the previous version
+    # hardcoded tool=/params= as explicit kwargs *and* accepted **overrides,
+    # so any test overriding either of them (e.g. constructing a
+    # generate_handbook action, see test_actions_api_download.py) raised
+    # "got multiple values for keyword argument". Fixed here as reusable
+    # test infrastructure even though no test in *this* file exercises the
+    # override yet.
+    defaults = {
+        "tool": "create_onboarding_issue",
+        "params": {"employee": "Jane Doe"},
+        "summary": "Create the onboarding issue",
+        "idempotency_key": "key-1",
+    }
+    action = Action(**{**defaults, **overrides})
     plan.actions.append(action)
     db_session.add(plan)
     db_session.commit()
