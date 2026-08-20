@@ -8,6 +8,15 @@ risque (Pango/Cairo) à ce stade avancé du hackathon.
 
 Écrit sous DATA_DIR/documents/ et retourne le chemin du fichier comme
 DocumentRef.
+
+RÉCONCILIATION (2026-08-20, Laurent) : implémentation reprise telle quelle
+depuis Feature/palier3 (Hugo) -- dev_laurent n'avait qu'un stub
+(`raise NotImplementedError`) pour ce tool. Seul changement : DATA_DIR
+aligné sur la convention établie par employee_db.py (`./data` résolu en
+absolu, pas `/app/data` en dur) -- sans effet en Docker, où
+docker-compose.yml fixe explicitement DATA_DIR=/app/data, mais nécessaire
+pour que les scripts autonomes (scripts/test_*.py) et les tests unitaires
+fonctionnent aussi hors conteneur.
 """
 
 import os
@@ -20,8 +29,11 @@ from pydantic import Field
 from mcp_instance import mcp
 from domain_types import DocumentRef
 
-_DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-_DOCUMENTS_DIR = _DATA_DIR / "documents"
+# Même convention que employee_db.py::DATA_DIR -- lu au niveau module (pas
+# capturé dans une fermeture) pour que les tests puissent le monkeypatcher
+# sans recharger le module.
+DATA_DIR = Path(os.environ.get("DATA_DIR", "./data")).resolve()
+DOCUMENTS_DIR = DATA_DIR / "documents"
 
 _TEMPLATES = {
     "welcome_pack": Template("""<!DOCTYPE html>
@@ -76,16 +88,22 @@ def generate_handbook(
     """Génère un document d'accueil (HTML) à partir d'un gabarit, pour le
     nouveau collaborateur identifié par employee_id. Nécessite que la
     fiche employé ait déjà été créée (voir create_employee_record).
-    Retourne le chemin du fichier généré."""
+    Retourne le chemin du fichier généré (DocumentRef, alias de str).
+
+    Note : le nom de la fonction ("handbook") et sa docstring d'origine
+    mentionnaient un PDF -- ce n'est PAS ce que fait cette implémentation
+    (HTML brut, voir docstring de module pour le choix assumé). Le nom du
+    tool reste inchangé pour ne pas casser le contrat déjà connu du LLM
+    (system prompt, _SUMMARY_TEMPLATES côté agent/planner.py)."""
     tpl = _TEMPLATES.get(template)
     if tpl is None:
         raise ValueError(
             f"Gabarit inconnu : '{template}'. Gabarits valides : {sorted(_TEMPLATES)}."
         )
 
-    _DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{template}_{employee_id}.html"
-    filepath = _DOCUMENTS_DIR / filename
+    filepath = DOCUMENTS_DIR / filename
 
     html = tpl.render(employee_id=employee_id)
     filepath.write_text(html, encoding="utf-8")
