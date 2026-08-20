@@ -1,11 +1,16 @@
 """
 Unit tests for planner.py's tool-discovery filtering.
 
-Only `_to_ollama_tools` is exercised here -- the pure part of
-_discover_tools() (see planner.py), extracted specifically so it doesn't
-need a real mcp-server or the `fastmcp` package's actual network behavior
-to test: it just maps/filters a list of already-fetched Tool-shaped
-objects.
+RECONCILIATION (2026-08-20): `_to_ollama_tools` (plural -- filtered AND
+converted a whole list in one pure function) doesn't exist anymore after
+merging dev_laurent with Hugo's Feature/palier3: the "allowed tools" design
+needs the internal-tool filter and the per-tool conversion as two separate
+steps (`_build_prompt_context` converts ALL functional tools, allowed or
+not, then sorts by name afterwards -- see planner.py's module docstring).
+The split is actually more testable than before, not less: `_functional_tools`
+(the security-relevant half -- internal tools must never reach Ollama) and
+`_to_ollama_tool` (pure shape conversion, singular now) are each exercised
+on their own below, instead of only together.
 
 Confirmed running locally (Laurent) -- planner.py itself still needs a
 real `fastmcp` install to *import* (`from fastmcp import Client`), so this
@@ -22,37 +27,38 @@ def _fake_tool(name: str, description: str = "desc", schema: dict | None = None)
     return SimpleNamespace(name=name, description=description, inputSchema=schema or {"type": "object"})
 
 
-def test_to_ollama_tools_converts_shape():
-    tools = [_fake_tool("create_onboarding_issue", "Crée un ticket", {"type": "object", "properties": {}})]
+def test_to_ollama_tool_converts_shape():
+    tool = _fake_tool("create_onboarding_issue", "Crée un ticket", {"type": "object", "properties": {}})
 
-    result = planner._to_ollama_tools(tools)
+    result = planner._to_ollama_tool(tool)
 
-    assert result == [
-        {
-            "type": "function",
-            "function": {
-                "name": "create_onboarding_issue",
-                "description": "Crée un ticket",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-    ]
+    assert result == {
+        "type": "function",
+        "function": {
+            "name": "create_onboarding_issue",
+            "description": "Crée un ticket",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
 
 
-def test_to_ollama_tools_defaults_missing_description_to_empty_string():
-    tools = [_fake_tool("create_onboarding_issue", description=None)]
+def test_to_ollama_tool_defaults_missing_description_to_empty_string():
+    tool = _fake_tool("create_onboarding_issue", description=None)
 
-    result = planner._to_ollama_tools(tools)
+    result = planner._to_ollama_tool(tool)
 
-    assert result[0]["function"]["description"] == ""
+    assert result["function"]["description"] == ""
 
 
-def test_to_ollama_tools_excludes_undo_compensation_tools():
+def test_functional_tools_excludes_undo_compensation_tools():
     """The core guarantee this test protects: the LLM must never see (let
     alone be able to choose) a compensation/undo tool during planning --
     see docs/TOOLS.md "Outils internes (non exposés au LLM)" and
     backend/app/services/mcp_client.py, which is the only caller allowed to
-    invoke them."""
+    invoke them. Unlike before the reconciliation, this now holds
+    regardless of ALLOWED_TOOLS -- _functional_tools() runs before the
+    allowed/excluded split, so an internal tool can never leak through
+    either as an `action` or as an `excluded_action`."""
     tools = [
         _fake_tool("create_onboarding_issue"),
         _fake_tool("close_onboarding_issue"),
@@ -60,18 +66,145 @@ def test_to_ollama_tools_excludes_undo_compensation_tools():
         _fake_tool("delete_employee_record"),
     ]
 
-    result = planner._to_ollama_tools(tools)
+    result = planner._functional_tools(tools)
 
-    exposed_names = {t["function"]["name"] for t in result}
-    assert exposed_names == {"create_onboarding_issue", "create_employee_record"}
+    assert set(result.keys()) == {"create_onboarding_issue", "create_employee_record"}
 
 
-def test_to_ollama_tools_returns_empty_list_when_only_internal_tools_exist():
+def test_functional_tools_returns_empty_dict_when_only_internal_tools_exist():
     tools = [_fake_tool("close_onboarding_issue"), _fake_tool("delete_employee_record")]
 
-    result = planner._to_ollama_tools(tools)
+    result = planner._functional_tools(tools)
 
-    assert result == []
+    assert result == {}
+
+
+# --- _build_prompt_context / build_plan: allowed vs. excluded split ------
+#
+# New with the reconciliation: Hugo's "allowed tools" mechanism. Async, so
+# uses the same pytest.mark.anyio + anyio_backend pattern already
+# established in mcp_server/tests/test_tracker.py -- no real mcp-server or
+# Ollama involved, both external calls are monkeypatched.
+
+import pytest
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+async def test_build_prompt_context_offers_all_functional_tools_to_ollama(monkeypatch):
+    """Central design point of this mechanism (see planner.py's module
+    docstring): the model is given ALL functional tools as technically
+    callable, not just the allowed ones -- the allowed/excluded split
+    happens after the fact in build_plan(), not by hiding tools here."""
+    tools = [_fake_tool("create_onboarding_issue"), _fake_tool("create_employee_record")]
+    permissions = {"allowed": ["create_onboarding_issue"], "registered_but_not_allowed": ["create_employee_record"]}
+
+    async def fake_discover():
+        return tools, permissions
+
+    monkeypatch.setattr(planner, "_discover_tool_permissions", fake_discover)
+
+    ollama_tools, system_prompt, allowed_names = await planner._build_prompt_context("un prompt")
+
+    exposed_names = {t["function"]["name"] for t in ollama_tools}
+    assert exposed_names == {"create_onboarding_issue", "create_employee_record"}
+    assert allowed_names == {"create_onboarding_issue"}
+
+
+async def test_build_plan_sorts_allowed_calls_into_actions(monkeypatch):
+    async def fake_context(prompt):
+        return [], "system prompt", {"create_onboarding_issue"}
+
+    async def fake_post(self, url, json):
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": "create_onboarding_issue", "arguments": {"employee_name": "Camille"}}},
+                        ]
+                    }
+                }
+
+        return FakeResponse()
+
+    monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+
+    assert len(actions) == 1
+    assert actions[0]["tool"] == "create_onboarding_issue"
+    assert excluded_actions == []
+    assert notice is None
+
+
+async def test_build_plan_sorts_blocked_calls_into_excluded_actions_with_a_note(monkeypatch):
+    """The core guarantee of this whole mechanism: a call to a tool NOT in
+    `allowed_names` must never land in `actions` (which the backend goes on
+    to actually execute) -- it must be quarantined in `excluded_actions`
+    with a human-readable note instead."""
+    async def fake_context(prompt):
+        return [], "system prompt", {"create_onboarding_issue"}  # create_employee_record NOT allowed
+
+    async def fake_post(self, url, json):
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": "create_employee_record", "arguments": {"name": "Camille"}}},
+                        ]
+                    }
+                }
+
+        return FakeResponse()
+
+    monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+
+    assert actions == []
+    assert len(excluded_actions) == 1
+    assert excluded_actions[0]["tool"] == "create_employee_record"
+    assert excluded_actions[0]["note"]
+    assert notice is None
+
+
+async def test_build_plan_returns_notice_when_no_tool_call_at_all(monkeypatch):
+    async def fake_context(prompt):
+        return [], "system prompt", set()
+
+    async def fake_post(self, url, json):
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"tool_calls": [], "content": "Cette demande ne concerne pas l'onboarding."}}
+
+        return FakeResponse()
+
+    monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+    actions, excluded_actions, notice = await planner.build_plan("un prompt hors-sujet")
+
+    assert actions == []
+    assert excluded_actions == []
+    assert notice == "Cette demande ne concerne pas l'onboarding."
 
 
 # --- _summarize: visibility of the `team` default on create_employee_record

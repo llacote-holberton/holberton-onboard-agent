@@ -1,18 +1,36 @@
 """
 Planificateur : découvre les tools disponibles via mcp-server (lecture
-seule, list_tools()), les convertit au format tool-calling d'Ollama, et
-les propose au modèle avec le prompt utilisateur. N'exécute rien.
-
-Synthèse entre la proposition de Pierre (découverte dynamique des tools,
-source de vérité unique côté mcp-server) et le tool calling natif d'Ollama
-(plus fiable qu'un format JSON généré librement) -- à valider ensemble
-avant de merger, ce fichier remplace le contenu envoyé par Pierre pour
-/plan uniquement.
+seule, list_tools() + la resource "config://allowed-tools"), les convertit
+au format tool-calling d'Ollama, et les propose au modèle avec le prompt
+utilisateur. N'exécute rien.
 
 Contrat consommé par backend/app/services/agent_client.py :
-  build_plan(prompt) -> [{"tool": str, "params": dict, "summary": str}, ...]
+  build_plan(prompt) -> (actions, excluded_actions, notice), voir
+  build_plan() plus bas pour le détail des trois éléments.
+
+RECONCILIATION (2026-08-20) : fusion de dev_laurent (défaut + résolution
+d'alias sur `team`/`name`, visibilité des champs manquants dans le résumé
+-- voir _PARAM_ALIASES/_MissingParamAsPlaceholder ci-dessous) et de
+Feature/palier3 de Hugo (liste d'outils autorisés via la resource MCP
+"config://allowed-tools", tri actions/excluded_actions -- voir
+_build_prompt_context ci-dessous). Les deux mécanismes sont orthogonaux et
+ne se recouvrent pas : l'un décide QUELS tools sont proposables et
+lesquels de leurs appels sont exécutables, l'autre rend lisible ce que
+CHAQUE appel proposé contient réellement. Fait à la main faute d'accès
+push pour ouvrir une vraie PR -- à repasser en revue avant merge réel.
+
+Extension "tools autorisés" : contrairement à la toute première version de
+cette extension, le modèle reçoit maintenant TOUS les tools fonctionnels
+(autorisés et non autorisés) comme appelables techniquement -- /plan
+n'exécute jamais rien, donc aucun risque à le laisser "choisir" un tool non
+autorisé. Le tri autorisé/exclu se fait après coup, de façon déterministe,
+dans build_plan() (voir plus bas), plutôt que de compter sur le modèle
+pour décrire correctement en texte ce qu'il n'a pas pu faire -- plus
+robuste qu'un mécanisme reposant sur la fiabilité du texte produit par un
+petit modèle local.
 """
 
+import json
 import os
 import httpx
 from fastmcp import Client
@@ -21,18 +39,28 @@ from datetime import date
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 
-# Pas de suffixe /mcp dans la variable elle-même (convention alignée sur
-# celle de Pierre / docker-compose.yml) -- on l'ajoute ici.
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
-SYSTEM_PROMPT = (
-    f"Nous sommes le {date.today().isoformat()}. "
+_BASE_SYSTEM_PROMPT = (
     "Tu es un agent qui prépare l'arrivée de nouveaux collaborateurs. "
-    "À partir de l'intention de l'utilisateur, propose les actions pertinentes "
-    "en appelant les outils disponibles. Tu ne dois JAMAIS exécuter d'action "
-    "toi-même : tu proposes uniquement un plan, qui sera validé par un humain "
-    "avant toute exécution."
+    "À partir de l'intention de l'utilisateur, propose TOUTES les actions "
+    "pertinentes en appelant les outils disponibles -- une intention "
+    "d'onboarding implique souvent plusieurs actions à la fois (créer un "
+    "ticket, notifier l'équipe, générer un document, etc.), pas une seule "
+    "par défaut. Tu ne dois JAMAIS exécuter d'action toi-même : tu "
+    "proposes uniquement un plan, qui sera validé par un humain avant "
+    "toute exécution.\n\n"
+    "Distingue deux types de paramètres :\n"
+    "- Paramètres d'IDENTIFICATION (équipe, date, email, identifiant) : "
+    "ne les invente jamais au hasard, mais déduis-les du contexte quand "
+    "c'est raisonnable (ex: l'équipe mentionnée pour une personne "
+    "s'applique à toutes les actions concernant cette même personne).\n"
+    "- Paramètres de CONTENU (checklist, titre, corps de message, canal "
+    "de notification) : choisis une valeur par défaut raisonnable plutôt "
+    "que de sauter l'outil, l'humain validera de toute façon avant "
+    "exécution. Pour le paramètre channel d'un message d'accueil, "
+    "utilise 'team' par défaut sauf indication contraire explicite."
 )
 
 # Résumés lisibles pour l'écran d'approbation. Légère duplication des noms
@@ -67,6 +95,10 @@ _SUMMARY_TEMPLATES = {
 # implémentée -- pas de convention de nommage (ex. préfixe "undo_") ni de
 # métadonnée FastMCP exploitée pour l'instant, volontairement simple tant
 # qu'il n'y a que deux entrées.
+#
+# Orthogonal à la notion d'"autorisation" plus bas (ALLOWED_TOOLS) : une
+# fonction interne reste interne même si ALLOWED_TOOLS la mentionnerait
+# par erreur -- les deux mécanismes sont vérifiés indépendamment.
 _INTERNAL_ONLY_TOOLS = {
     "close_onboarding_issue",
     "delete_employee_record",
@@ -160,47 +192,86 @@ def _summarize(tool_name: str, params: dict) -> str:
             return template.format_map(_MissingParamAsPlaceholder(params_for_summary))
         except (IndexError, ValueError):
             pass
-    # Fallback si le template ne correspond plus aux vrais paramètres du
-    # tool (ex: signature modifiée par un·e coéquipier·ère) -- affiche les
-    # paramètres bruts plutôt qu'un nom de tool sec et peu lisible.
     if params:
         readable = ", ".join(f"{k}: {v}" for k, v in params.items())
         return f"{tool_name} ({readable})"
     return f"Exécuter {tool_name}"
 
 
-def _to_ollama_tools(tools: list) -> list[dict]:
-    """Convertit une liste d'objets Tool MCP (déjà en JSON Schema pour leurs
-    paramètres) au format tool-calling d'Ollama, en excluant les fonctions
-    de compensation internes (_INTERNAL_ONLY_TOOLS) -- le LLM ne doit
-    jamais pouvoir les choisir dans un plan. Fonction pure, séparée de
-    _discover_tools() ci-dessous, pour être testable sans dépendre d'un
-    vrai mcp-server ni du package fastmcp."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description or "",
-                "parameters": t.inputSchema,
-            },
-        }
-        for t in tools
-        if t.name not in _INTERNAL_ONLY_TOOLS
-    ]
+def _functional_tools(tools: list) -> dict:
+    """Filtre les fonctions de compensation internes (_INTERNAL_ONLY_TOOLS)
+    hors de la liste brute renvoyée par list_tools() -- le LLM ne doit
+    jamais pouvoir les choisir dans un plan, autorisé ou pas. Fonction pure,
+    extraite de _build_prompt_context() ci-dessous pour rester testable
+    sans dépendre d'un vrai mcp-server ni du package fastmcp -- reprend le
+    rôle que jouait _to_ollama_tools() avant la fusion avec l'extension
+    "tools autorisés" de Hugo (voir docstring de module). Renvoie un dict
+    {name: Tool} plutôt qu'une liste : _build_prompt_context() en a besoin
+    pour croiser avec `allowed_names` par nom."""
+    return {t.name: t for t in tools if t.name not in _INTERNAL_ONLY_TOOLS}
 
 
-async def _discover_tools() -> list[dict]:
-    """Lecture seule -- aucun effet de bord. Convertit le schéma MCP
-    (déjà en JSON Schema) au format tool-calling d'Ollama."""
+def _to_ollama_tool(t) -> dict:
+    """Convertit un seul objet Tool MCP (déjà en JSON Schema pour ses
+    paramètres) au format tool-calling d'Ollama."""
+    return {
+        "type": "function",
+        "function": {
+            "name": t.name,
+            "description": t.description or "",
+            "parameters": t.inputSchema,
+        },
+    }
+
+
+async def _discover_tool_permissions() -> tuple[list, dict]:
+    """Retourne (tools_mcp_bruts, permissions), permissions étant le
+    contenu de la resource "config://allowed-tools" (allowed /
+    registered_but_not_allowed / allowed_but_not_registered)."""
     async with Client(_MCP_ENDPOINT) as mcp_client:
         tools = await mcp_client.list_tools()
+        resource_result = await mcp_client.read_resource("config://allowed-tools")
 
-    return _to_ollama_tools(tools)
+    # read_resource() renvoie une liste de contenus ; on prend le premier
+    # bloc texte/JSON, seul bloc produit par notre resource.
+    permissions = json.loads(resource_result[0].text)
+
+    return tools, permissions
 
 
-async def build_plan(prompt: str) -> list[dict]:
-    tools = await _discover_tools()
+async def _build_prompt_context(prompt: str) -> tuple[list[dict], str, set[str]]:
+    """Donne TOUS les tools fonctionnels (autorisés + non autorisés) comme
+    choix possibles au modèle -- /plan n'exécute jamais rien, donc aucun
+    risque à le laisser "choisir" un tool non autorisé. Le tri
+    autorisé/exclu se fait après coup, de façon déterministe, dans
+    build_plan() ci-dessous, plutôt que de compter sur le modèle pour
+    décrire correctement en texte ce qu'il n'a pas pu faire."""
+    tools, permissions = await _discover_tool_permissions()
+
+    functional_tools = _functional_tools(tools)
+    allowed_names = set(permissions["allowed"]) & functional_tools.keys()
+
+    ollama_tools = [_to_ollama_tool(t) for t in functional_tools.values()]
+
+    system_prompt = _BASE_SYSTEM_PROMPT + (
+        f"\n\nNous sommes le {date.today().isoformat()}. "
+        "Quand une date est relative (\"lundi prochain\", \"dans 2 semaines\"), "
+        "calcule la date exacte au format YYYY-MM-DD avant d'appeler un outil."
+    )
+
+    return ollama_tools, system_prompt, allowed_names
+
+
+async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
+    """Retourne (actions, excluded_actions, notice).
+
+    - actions : outils autorisés que le modèle a choisi d'appeler.
+    - excluded_actions : outils NON autorisés que le modèle aurait appelés
+      si rien ne l'en empêchait -- même format que actions, plus une note
+      expliquant pourquoi ce n'est pas exécutable actuellement.
+    - notice : texte du modèle quand ni l'un ni l'autre n'a été produit
+      (ex: demande hors-scope, aucun outil pertinent du tout)."""
+    ollama_tools, system_prompt, allowed_names = await _build_prompt_context(prompt)
 
     async with httpx.AsyncClient(timeout=110) as client:
         r = await client.post(
@@ -208,12 +279,13 @@ async def build_plan(prompt: str) -> list[dict]:
             json={
                 "model": OLLAMA_MODEL,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                "tools": tools,
+                "tools": ollama_tools,
                 "think": False,
                 "stream": False,
+                "options": {"temperature": 0.1},
             },
         )
         r.raise_for_status()
@@ -222,14 +294,28 @@ async def build_plan(prompt: str) -> list[dict]:
     tool_calls = data.get("message", {}).get("tool_calls", [])
 
     actions = []
+    excluded_actions = []
     for call in tool_calls:
         fn = call["function"]
         tool_name = fn["name"]
         params = fn.get("arguments", {})
-        actions.append({
-            "tool": tool_name,
-            "params": params,
-            "summary": _summarize(tool_name, params),
-        })
+        summary = _summarize(tool_name, params)
 
-    return actions
+        if tool_name in allowed_names:
+            actions.append({"tool": tool_name, "params": params, "summary": summary})
+        else:
+            excluded_actions.append({
+                "tool": tool_name,
+                "params": params,
+                "summary": summary,
+                "note": (
+                    "Action non autorisée pour le moment -- contactez "
+                    "l'administrateur pour l'activer."
+                ),
+            })
+
+    notice = None
+    if not actions and not excluded_actions:
+        notice = data.get("message", {}).get("content") or None
+
+    return actions, excluded_actions, notice

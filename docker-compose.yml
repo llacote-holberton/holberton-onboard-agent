@@ -34,6 +34,9 @@ services:
     environment:
       - HBN_MCP_PORT=${HBN_MCP_PORT:-8200}
       - DATA_DIR=${DATA_DIR:-/app/data}
+      # Liste des tools autorisés pour l'agent LLM, séparés par des
+      # virgules. Vide/absent = tous les tools enregistrés sont autorisés.
+      - ALLOWED_TOOLS=${ALLOWED_TOOLS:-}
       # Mailbox tool target -- see the mailhog service above.
       - MAILHOG_HOST=mailhog
       - MAILHOG_SMTP_PORT=${MAILHOG_SMTP_PORT:-1025}

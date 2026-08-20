@@ -90,18 +90,9 @@ def render_audit_trace(entries: list[dict]) -> None:
 st.set_page_config(page_title="Onboarding Agent", page_icon="✅", layout="centered")
 
 # --- Session state -------------------------------------------------------
-# Streamlit reruns the whole script top to bottom on every interaction, so
-# the generated plan has to be kept in session_state to survive from one
-# rerun to the next. The checkbox choices don't need their own dict: each
-# st.checkbox(..., key=...) already persists its own value in session_state,
-# keyed by the (fresh, per-plan) action id.
 if "plan" not in st.session_state:
     st.session_state.plan = None
 if "trace" not in st.session_state:
-    # Last audit trace fetched for st.session_state.plan (see
-    # fetch_audit_trace) -- kept apart from `plan` so a plan can be
-    # displayed before its trace has ever been fetched (None) vs. fetched
-    # but genuinely empty ([]).
     st.session_state.trace = None
 
 st.title("Holberton — :blue[Onboarding Agent]")
@@ -122,7 +113,7 @@ if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
             response = requests.post(f"{BACKEND_URL}/plans", json={"prompt": prompt}, timeout=60)
             response.raise_for_status()
             st.session_state.plan = response.json()
-            st.session_state.trace = None  # nouveau plan -> l'ancienne trace ne correspond plus
+            st.session_state.trace = None
         except Exception as exc:
             st.error(f"Impossible de générer le plan : {describe_error(exc)}")
             st.session_state.plan = None
@@ -132,36 +123,40 @@ if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
 plan = st.session_state.plan
 
 if plan:
-    if not plan["actions"]:
-        # Peut arriver plus souvent que prévu avec un petit modèle local
-        # (voir les limites documentées côté agent/mcp-server) -- sans ce
-        # cas, l'écran affichait "Plan proposé (0 actions)" avec une
-        # checklist vide et un bouton désactivé, sans explication.
-        st.warning(
-            "Aucune action pertinente n'a été identifiée pour cette demande. "
-            "Essayez de reformuler avec une intention liée à l'onboarding d'un collaborateur."
-        )
+    if not plan["actions"] and not plan.get("excluded_actions"):
+        if plan.get("clarification"):
+            st.warning(f"💡 {plan['clarification']}")
+        else:
+            st.warning(
+                "Aucune action pertinente n'a été identifiée pour cette demande. "
+                "Essayez de reformuler avec une intention liée à l'onboarding d'un collaborateur."
+            )
     else:
-        st.subheader(f"Plan proposé ({len(plan['actions'])} actions)")
+        if plan["actions"]:
+            st.subheader(f"Plan proposé ({len(plan['actions'])} actions)")
 
-        # Each checkbox is pre-checked, matching the original wireframe. The
-        # key is scoped to this plan's action id, so a freshly generated
-        # plan (new ids) always starts fully checked -- Streamlit only
-        # respects `value=` the first time it sees a given key.
-        checkbox_states = {
-            action["id"]: st.checkbox(action["summary"], value=True, key=f"action_{action['id']}")
-            for action in plan["actions"]
-        }
+            checkbox_states = {
+                action["id"]: st.checkbox(action["summary"], value=True, key=f"action_{action['id']}")
+                for action in plan["actions"]
+            }
 
-        selected_count = sum(checkbox_states.values())
-        total_count = len(plan["actions"])
-        st.caption(f"{selected_count} action(s) sélectionnée(s) sur {total_count}")
+            selected_count = sum(checkbox_states.values())
+            total_count = len(plan["actions"])
+            st.caption(f"{selected_count} action(s) sélectionnée(s) sur {total_count}")
+        else:
+            checkbox_states = {}
+            selected_count = 0
+            st.info("Aucune action autorisée n'a été identifiée pour cette demande.")
+
+        if plan.get("excluded_actions"):
+            st.markdown("**🚫 Actions exclues (non autorisées)**")
+            for excluded in plan["excluded_actions"]:
+                st.markdown(f"~~{excluded['summary']}~~")
+                st.caption(f"⚠️ {excluded.get('note', 'Action non autorisée.')}")
 
         if st.button("Exécuter la sélection", type="primary", disabled=selected_count == 0):
             with st.spinner("Exécution…"):
                 try:
-                    # Step 1: send the human's approve/refuse decision for
-                    # every proposed action.
                     for action in plan["actions"]:
                         decision_status = "approved" if checkbox_states[action["id"]] else "refused"
                         decision = requests.patch(
@@ -171,7 +166,6 @@ if plan:
                         )
                         decision.raise_for_status()
 
-                    # Step 2: trigger execution of the now-approved actions.
                     execution = requests.post(f"{BACKEND_URL}/plans/{plan['id']}/execute", timeout=60)
                     execution.raise_for_status()
                     results = execution.json()
@@ -182,10 +176,6 @@ if plan:
                 except Exception as exc:
                     st.error(f"Échec de l'exécution : {describe_error(exc)}")
 
-        # Persiste en dehors du bloc "Exécuter" ci-dessus (pas juste au
-        # moment du clic) pour rester affichée sur les reruns suivants --
-        # ex. quand tu coches/décoches une action après une première
-        # exécution.
         if st.session_state.trace is not None:
             st.subheader("Traçabilité de ce plan")
             st.caption(f"Plan `{plan['id']}` — du plus ancien au plus récent (GET /audit?plan_id=...).")
@@ -195,9 +185,6 @@ if plan:
                 st.rerun()
 
 # --- Traçabilité : retrouver un plan précédent ----------------------------
-# Utile si la page a été rechargée (session_state.plan reparti à None) mais
-# que tu as garde un id de plan -- ex. depuis un log, ou une exécution
-# precedente -- sans redemander un nouveau plan au LLM pour autant.
 
 with st.expander("Retrouver la trace d'un plan précédent"):
     st.caption("Colle l'id d'un plan déjà généré pour revoir sa séquence d'appels complète.")
@@ -207,10 +194,44 @@ with st.expander("Retrouver la trace d'un plan précédent"):
         if entries is not None:
             render_audit_trace(entries)
 
+# --- Outils autorisés (lecture seule) --------------------------------
+
+with st.expander("🔧 Outils autorisés"):
+    st.caption(
+        "Liste des outils que l'agent LLM peut réellement appeler, "
+        "définie par la variable ALLOWED_TOOLS du serveur MCP."
+    )
+    try:
+        response = requests.get(f"{BACKEND_URL}/agent/tools", timeout=15)
+        response.raise_for_status()
+        permissions = response.json()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**✅ Autorisés**")
+            if permissions.get("allowed"):
+                for name in permissions["allowed"]:
+                    st.write(f"- `{name}`")
+            else:
+                st.caption("Aucun.")
+        with col2:
+            st.markdown("**🚫 Non autorisés**")
+            if permissions.get("registered_but_not_allowed"):
+                for name in permissions["registered_but_not_allowed"]:
+                    st.write(f"- `{name}`")
+            else:
+                st.caption("Aucun.")
+
+        if permissions.get("allowed_but_not_registered"):
+            st.warning(
+                "⚠️ Dans ALLOWED_TOOLS mais introuvables parmi les tools "
+                "réellement définis (faute de frappe ?) : "
+                + ", ".join(f"`{n}`" for n in permissions["allowed_but_not_registered"])
+            )
+    except Exception as exc:
+        st.error(f"Impossible de récupérer la liste des outils : {describe_error(exc)}")
+
 # --- Diagnostic (palier 2) --------------------------------------------
-# Separate from the flow above on purpose: proves the chain frontend ->
-# backend -> agent (-> Ollama) actually talks to itself, without depending
-# on any project-specific planning/execution logic that isn't built yet.
 
 with st.expander("Diagnostic de connectivité"):
     st.caption("Vérifie que chaque service de la chaîne est bien joignable, indépendamment du flux ci-dessus.")
@@ -224,8 +245,6 @@ with st.expander("Diagnostic de connectivité"):
             st.error(f"Backend injoignable : {describe_error(exc)}")
 
     if st.button("Vérifier l'agent (rapide, sans LLM)"):
-        # This is the palier 2 gate: backend <-> agent reachability, no
-        # Ollama call, no meaningful memory footprint.
         try:
             response = requests.get(f"{BACKEND_URL}/agent/ping", timeout=15)
             response.raise_for_status()
@@ -237,9 +256,6 @@ with st.expander("Diagnostic de connectivité"):
         st.caption("Peut échouer si la machine n'a pas assez de RAM pour charger le modèle — indépendant du code.")
         with st.spinner("Appel de l'agent (peut prendre du temps sur un premier chargement du modèle)…"):
             try:
-                # Must stay above agent_client.py's _PING_LLM_TIMEOUT (90s)
-                # on the backend side, or this button times out before the
-                # backend itself gives up.
                 response = requests.get(f"{BACKEND_URL}/agent/ping-llm", timeout=130)
                 response.raise_for_status()
                 st.success(f"Agent + LLM joignables : {response.json()}")

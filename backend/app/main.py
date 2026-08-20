@@ -70,6 +70,18 @@ async def ping_agent_llm():
     return {"agent_reachable": True, "agent_response": agent_response}
 
 
+@app.get("/agent/tools")
+async def agent_tools():
+    """Read-only proxy to the agent's /tools/permissions, itself a
+    passthrough of mcp-server's "config://allowed-tools" MCP resource.
+    Powers the frontend's "Outils autorisés" panel -- the frontend never
+    talks to the agent or mcp-server directly (see ARCHITECTURE.md)."""
+    try:
+        return await agent_client.tool_permissions()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Agent AI /tools/permissions call failed: {exc}") from exc
+
+
 if __name__ == "__main__":
     import uvicorn
 

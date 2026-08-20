@@ -83,6 +83,12 @@ class PlanRead(BaseModel):
     status: PlanStatus
     created_at: datetime
     actions: list[ActionRead] = []
+    clarification: Optional[str] = None
+    # Texte du modèle quand ni actions ni excluded_actions n'ont été
+    # produits (ex: demande hors-scope). None sinon.
+    excluded_actions: list[dict[str, Any]] = []
+    # Outils NON autorisés que le modèle aurait appelés -- chaque entrée :
+    # {"tool": str, "params": dict, "summary": str, "note": str}.
 
 
 # --- Execution / undo ----------------------------------------------------
