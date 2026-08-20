@@ -15,12 +15,25 @@ dans le system prompt), pour pouvoir le dire explicitement si la demande
 de l'utilisateur en aurait besoin, plutôt que de rester silencieux ou
 d'appeler un tool autorisé à la place par défaut.
 
-Extension "boucle d'itération" (palier 4) : certains tools sont marqués
-EXPLORATOIRES (_EXPLORATORY_TOOLS) -- en lecture seule, sans effet de
-bord (ex: list_teams). Si le modèle les appelle, on les exécute
-immédiatement nous-mêmes et on renvoie le résultat dans la conversation,
-puis on rappelle Ollama pour qu'il continue son raisonnement avec ce
-nouveau contexte -- un vrai aller-retour multi-tours, pas un seul appel.
+Extension "boucle d'itération" (palier 4) : deux mécanismes distincts,
+tous deux basés sur la même boucle multi-tours.
+
+1. Tools EXPLORATOIRES (_EXPLORATORY_TOOLS, ex: list_teams) : en lecture
+   seule, sans effet de bord. Exécutés immédiatement par l'agent, leur
+   résultat est renvoyé au modèle qui continue son raisonnement avec ce
+   contexte enrichi.
+
+2. Construction du plan par relances successives : plutôt que d'exiger
+   du modèle qu'il énumère toutes les actions d'un coup en une seule
+   réponse (peu fiable avec un petit modèle -- observé en pratique : il
+   omet ou invente des actions au-delà de la première), on récupère les
+   actions une par une. Après chaque tool_call d'action, on lui redemande
+   explicitement "autre chose ?" (_NUDGE) avant de finaliser. Chaque
+   proposition n'est PAS exécutée à ce stade (aucun effet de bord), juste
+   accumulée -- seul un accusé de réception factice est renvoyé pour
+   garder la conversation cohérente, jusqu'à ce que le modèle réponde
+   qu'il n'a plus rien à ajouter.
+
 Un garde-fou (_MAX_TURNS) empêche une boucle infinie si le modèle
 n'arrive jamais à une décision finale.
 """
@@ -38,10 +51,10 @@ MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
 # Garde-fou anti-boucle-infinie : nombre maximum d'allers-retours avec
-# Ollama pour un seul /plan. Au-delà, on finalise avec ce qu'on a, plutôt
-# que de laisser l'agent tourner indéfiniment (voir palier 4, "quelque
-# chose qui empêche l'agent de tourner à l'infini").
-_MAX_TURNS = 4
+# Ollama pour un seul /plan (exploration + relances de construction du
+# plan confondues). Au-delà, on finalise avec ce qu'on a accumulé,
+# plutôt que de laisser l'agent tourner indéfiniment.
+_MAX_TURNS = 6
 
 # Tools en LECTURE SEULE, sans aucun effet de bord, que le planificateur
 # exécute lui-même automatiquement pendant la boucle (contrairement aux
@@ -51,32 +64,40 @@ _MAX_TURNS = 4
 # puisqu'ils ne produisent aucun effet de bord réel.
 _EXPLORATORY_TOOLS = {"list_teams"}
 
+# Relance envoyée après chaque action proposée, pour construire le plan
+# progressivement plutôt que d'exiger une énumération complète en un
+# seul tour (peu fiable en pratique avec un petit modèle).
+_NUDGE = (
+    "As-tu d'autres actions pertinentes à proposer pour compléter cette "
+    "demande ? Si oui, appelle le ou les outils correspondants "
+    "maintenant. Si non, ou si tu as déjà tout proposé, réponds "
+    "uniquement par le mot \"Terminé\", sans appeler aucun outil."
+)
+
 _BASE_SYSTEM_PROMPT = (
     "Tu es un agent qui prépare l'arrivée de nouveaux collaborateurs.\n\n"
-    "Tu as accès à un outil de consultation en lecture seule (list_teams) "
-    "qui te permet de vérifier les équipes valides AVANT de proposer une "
-    "action -- utilise-le si tu as un doute sur le nom exact d'une équipe "
-    "mentionnée, plutôt que de deviner.\n\n"
     "Deux cas selon la formulation de la demande :\n"
     "1. Si l'utilisateur exprime une intention GÉNÉRALE sans lister "
-    "d'actions précises (ex: \"prépare l'arrivée de X\"), propose TOUTES "
-    "les actions pertinentes que tu juges nécessaires en appelant les "
-    "outils disponibles -- une intention d'onboarding implique souvent "
-    "plusieurs actions à la fois.\n"
+    "d'actions précises (ex: \"prépare l'arrivée de X\"), propose les "
+    "actions pertinentes que tu juges nécessaires -- une intention "
+    "d'onboarding implique souvent plusieurs actions à la fois. Tu peux "
+    "les proposer une par une, on te redemandera s'il en manque.\n"
     "2. Si l'utilisateur LISTE EXPLICITEMENT les actions demandées (verbes "
     "d'action précis comme \"crée X\", \"envoie Y\", \"génère Z\"), "
-    "limite-toi STRICTEMENT à cette liste. N'ajoute AUCUNE action "
-    "supplémentaire que l'utilisateur n'a pas mentionnée, même si elle te "
-    "semble généralement utile pour un onboarding.\n\n"
+    "propose un outil correspondant à chaque action listée, sans en "
+    "ajouter d'autres non mentionnées.\n\n"
     "Tu ne dois JAMAIS exécuter d'action à effet de bord toi-même : tu "
     "proposes uniquement un plan, qui sera validé par un humain avant "
-    "toute exécution. Consulter list_teams n'est pas une exécution, c'est "
-    "de la simple lecture.\n\n"
+    "toute exécution.\n\n"
+    "Vérification d'équipe : list_teams (lecture seule, à utiliser "
+    "librement) retourne la liste exacte des équipes valides. Si le nom "
+    "d'équipe mentionné n'est pas déjà un nom précis (ex: \"l'équipe "
+    "technique\" plutôt que \"Backend\"), appelle list_teams avant toute "
+    "action nécessitant une équipe -- ne devine jamais.\n\n"
     "Distingue deux types de paramètres :\n"
     "- Paramètres d'IDENTIFICATION (équipe, date, email, identifiant) : "
-    "ne les invente jamais au hasard, mais déduis-les du contexte quand "
-    "c'est raisonnable (ex: l'équipe mentionnée pour une personne "
-    "s'applique à toutes les actions concernant cette même personne).\n"
+    "ne les invente jamais au hasard, déduis-les du contexte quand c'est "
+    "raisonnable.\n"
     "- Paramètres de CONTENU (checklist, titre, corps de message, canal "
     "de notification) : choisis une valeur par défaut raisonnable plutôt "
     "que de sauter l'outil, l'humain validera de toute façon avant "
@@ -150,15 +171,17 @@ def _build_system_prompt() -> str:
 async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     """Retourne (actions, excluded_actions, notice).
 
-    Boucle multi-tours (palier 4) : si le modèle appelle un tool
-    exploratoire (lecture seule, _EXPLORATORY_TOOLS), on l'exécute nous-
-    mêmes immédiatement, on renvoie le résultat au modèle, et on continue
-    la conversation -- jusqu'à _MAX_TURNS allers-retours maximum.
+    Boucle multi-tours (palier 4) combinant deux mécanismes -- voir le
+    docstring du module pour le détail :
+    1. Exploration en lecture seule (list_teams) avant de décider.
+    2. Construction du plan par relances successives ("autre chose ?"),
+       plutôt qu'une énumération complète exigée en un seul tour.
 
-    - actions : outils autorisés que le modèle a choisi d'appeler.
-    - excluded_actions : outils NON autorisés que le modèle aurait appelés
-      si rien ne l'en empêchait -- même format que actions, plus une note
-      expliquant pourquoi ce n'est pas exécutable actuellement.
+    - actions : outils autorisés que le modèle a choisi d'appeler,
+      accumulés au fil des tours.
+    - excluded_actions : outils NON autorisés que le modèle aurait
+      appelés si rien ne l'en empêchait -- même format que actions, plus
+      une note expliquant pourquoi ce n'est pas exécutable actuellement.
     - notice : texte du modèle quand ni l'un ni l'autre n'a été produit
       (ex: demande hors-scope, aucun outil pertinent du tout)."""
     async with Client(_MCP_ENDPOINT) as mcp_client:
@@ -175,7 +198,9 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
             {"role": "user", "content": prompt},
         ]
 
-        data = None
+        collected_action_calls: list[dict] = []
+        final_text: str | None = None
+
         async with httpx.AsyncClient(timeout=110) as client:
             for turn in range(_MAX_TURNS):
                 r = await client.post(
@@ -195,21 +220,25 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 assistant_message = data.get("message", {})
                 tool_calls = assistant_message.get("tool_calls", [])
 
-                exploratory_calls = [
-                    c for c in tool_calls
-                    if c["function"]["name"] in _EXPLORATORY_TOOLS
-                ]
 
-                if not exploratory_calls:
-                    # Rien à explorer de plus : soit une réponse finale en
-                    # texte, soit des tool_calls d'action -> on sort de la
-                    # boucle et on finalise ci-dessous.
+                if not tool_calls:
+                    # Réponse finale en texte -- soit rien à proposer du
+                    # tout (premier tour), soit "Terminé" après relance.
+                    final_text = assistant_message.get("content")
+                    print(f"[TOUR {turn + 1}] -> arrêt, texte final: {final_text!r}")
                     break
 
-                # Un ou plusieurs tools exploratoires ont été appelés :
-                # on les exécute réellement (lecture seule, sans risque),
-                # on renvoie le résultat au modèle, et on reboucle.
                 messages.append(assistant_message)
+
+                exploratory_calls = [
+                    c for c in tool_calls if c["function"]["name"] in _EXPLORATORY_TOOLS
+                ]
+                action_calls = [
+                    c for c in tool_calls if c["function"]["name"] not in _EXPLORATORY_TOOLS
+                ]
+
+                # Exploration : exécutée réellement (lecture seule, sans
+                # risque), résultat renvoyé pour enrichir le contexte.
                 for call in exploratory_calls:
                     fn = call["function"]
                     result = await mcp_client.call_tool(fn["name"], fn.get("arguments", {}))
@@ -218,19 +247,33 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                         "tool_name": fn["name"],
                         "content": json.dumps(result.data),
                     })
-                # Tour suivant : le modèle reprend avec ce nouveau contexte.
 
-    tool_calls = data.get("message", {}).get("tool_calls", []) if data else []
+                # Actions : jamais exécutées ici (aucun effet de bord
+                # pendant la planification) -- juste accumulées, avec un
+                # accusé de réception factice pour garder la conversation
+                # cohérente (chaque tool_call attend une réponse "tool").
+                for call in action_calls:
+                    fn = call["function"]
+                    collected_action_calls.append(call)
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": fn["name"],
+                        "content": "Proposition enregistrée pour le plan.",
+                    })
+
+                if action_calls and not exploratory_calls:
+                    # Au moins une action proposée ce tour, rien à
+                    # explorer en parallèle : on demande explicitement
+                    # s'il reste autre chose avant de finaliser.
+                    messages.append({"role": "user", "content": _NUDGE})
+                # Sinon (exploration seule, ou mélange) -> on reboucle
+                # directement, le modèle reprend avec le contexte enrichi.
 
     actions = []
     excluded_actions = []
-    for call in tool_calls:
+    for call in collected_action_calls:
         fn = call["function"]
         tool_name = fn["name"]
-        if tool_name in _EXPLORATORY_TOOLS:
-            # Ne devrait plus arriver ici (déjà traité dans la boucle),
-            # sécurité si _MAX_TURNS est atteint en plein milieu.
-            continue
         params = fn.get("arguments", {})
         summary = _summarize(tool_name, params)
 
@@ -249,6 +292,6 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
 
     notice = None
     if not actions and not excluded_actions:
-        notice = data.get("message", {}).get("content") or None if data else None
+        notice = final_text or None
 
     return actions, excluded_actions, notice
