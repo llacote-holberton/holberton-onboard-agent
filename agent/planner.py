@@ -30,10 +30,23 @@ _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
 _BASE_SYSTEM_PROMPT = (
     "Tu es un agent qui prépare l'arrivée de nouveaux collaborateurs. "
-    "À partir de l'intention de l'utilisateur, propose les actions pertinentes "
-    "en appelant les outils disponibles. Tu ne dois JAMAIS exécuter d'action "
-    "toi-même : tu proposes uniquement un plan, qui sera validé par un humain "
-    "avant toute exécution."
+    "À partir de l'intention de l'utilisateur, propose TOUTES les actions "
+    "pertinentes en appelant les outils disponibles -- une intention "
+    "d'onboarding implique souvent plusieurs actions à la fois (créer un "
+    "ticket, notifier l'équipe, générer un document, etc.), pas une seule "
+    "par défaut. Tu ne dois JAMAIS exécuter d'action toi-même : tu "
+    "proposes uniquement un plan, qui sera validé par un humain avant "
+    "toute exécution.\n\n"
+    "Distingue deux types de paramètres :\n"
+    "- Paramètres d'IDENTIFICATION (équipe, date, email, identifiant) : "
+    "ne les invente jamais au hasard, mais déduis-les du contexte quand "
+    "c'est raisonnable (ex: l'équipe mentionnée pour une personne "
+    "s'applique à toutes les actions concernant cette même personne).\n"
+    "- Paramètres de CONTENU (checklist, titre, corps de message, canal "
+    "de notification) : choisis une valeur par défaut raisonnable plutôt "
+    "que de sauter l'outil, l'humain validera de toute façon avant "
+    "exécution. Pour le paramètre channel d'un message d'accueil, "
+    "utilise 'team' par défaut sauf indication contraire explicite."
 )
 
 _SUMMARY_TEMPLATES = {
@@ -93,20 +106,19 @@ async def _discover_tool_permissions() -> tuple[list, dict]:
     return tools, permissions
 
 
-async def _build_prompt_context(prompt: str) -> tuple[list[dict], str]:
-    """Sépare les tools fonctionnels (hors fonctions de compensation
-    internes) en deux groupes selon la resource "config://allowed-tools",
-    construit la liste réellement invocable par Ollama (autorisés
-    seulement) et le system prompt qui mentionne aussi les non-autorisés
-    en texte, pour que le modèle puisse les nommer sans pouvoir les
-    appeler."""
+async def _build_prompt_context(prompt: str) -> tuple[list[dict], str, set[str]]:
+    """Donne TOUS les tools fonctionnels (autorisés + non autorisés) comme
+    choix possibles au modèle -- /plan n'exécute jamais rien, donc aucun
+    risque à le laisser "choisir" un tool non autorisé. Le tri
+    autorisé/exclu se fait après coup, de façon déterministe, dans
+    build_plan() ci-dessous, plutôt que de compter sur le modèle pour
+    décrire correctement en texte ce qu'il n'a pas pu faire."""
     tools, permissions = await _discover_tool_permissions()
 
     functional_tools = {t.name: t for t in tools if t.name not in _INTERNAL_ONLY_TOOLS}
     allowed_names = set(permissions["allowed"]) & functional_tools.keys()
-    blocked_names = functional_tools.keys() - allowed_names
 
-    ollama_tools = [_to_ollama_tool(functional_tools[name]) for name in allowed_names]
+    ollama_tools = [_to_ollama_tool(t) for t in functional_tools.values()]
 
     system_prompt = _BASE_SYSTEM_PROMPT + (
         f"\n\nNous sommes le {date.today().isoformat()}. "
@@ -114,29 +126,19 @@ async def _build_prompt_context(prompt: str) -> tuple[list[dict], str]:
         "calcule la date exacte au format YYYY-MM-DD avant d'appeler un outil."
     )
 
-    if blocked_names:
-        blocked_descriptions = "\n".join(
-            f"- {name} : {functional_tools[name].description or '(pas de description)'}"
-            for name in sorted(blocked_names)
-        )
-        system_prompt += (
-            "\n\nCertains outils existent mais ne sont PAS autorisés actuellement "
-            "(tu ne peux PAS les appeler, ils ne te sont même pas proposés comme "
-            f"appelables) :\n{blocked_descriptions}\n\n"
-            "Si la demande de l'utilisateur nécessite un de ces outils non "
-            "autorisés, NE réponds PAS en appelant un autre outil à la place, "
-            "et ne reste PAS silencieux : indique clairement, en texte, quel "
-            "outil non autorisé serait nécessaire et pourquoi."
-        )
-
-    return ollama_tools, system_prompt
+    return ollama_tools, system_prompt, allowed_names
 
 
-async def build_plan(prompt: str) -> tuple[list[dict], str | None]:
-    """Retourne (actions, notice) -- notice est le texte du modèle quand il
-    n'a proposé aucune action (ex: outil non autorisé nécessaire, ou
-    information manquante), sinon None."""
-    ollama_tools, system_prompt = await _build_prompt_context(prompt)
+async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
+    """Retourne (actions, excluded_actions, notice).
+
+    - actions : outils autorisés que le modèle a choisi d'appeler.
+    - excluded_actions : outils NON autorisés que le modèle aurait appelés
+      si rien ne l'en empêchait -- même format que actions, plus une note
+      expliquant pourquoi ce n'est pas exécutable actuellement.
+    - notice : texte du modèle quand ni l'un ni l'autre n'a été produit
+      (ex: demande hors-scope, aucun outil pertinent du tout)."""
+    ollama_tools, system_prompt, allowed_names = await _build_prompt_context(prompt)
 
     async with httpx.AsyncClient(timeout=110) as client:
         r = await client.post(
@@ -150,6 +152,7 @@ async def build_plan(prompt: str) -> tuple[list[dict], str | None]:
                 "tools": ollama_tools,
                 "think": False,
                 "stream": False,
+                "options": {"temperature": 0.1},
             },
         )
         r.raise_for_status()
@@ -158,18 +161,28 @@ async def build_plan(prompt: str) -> tuple[list[dict], str | None]:
     tool_calls = data.get("message", {}).get("tool_calls", [])
 
     actions = []
+    excluded_actions = []
     for call in tool_calls:
         fn = call["function"]
         tool_name = fn["name"]
         params = fn.get("arguments", {})
-        actions.append({
-            "tool": tool_name,
-            "params": params,
-            "summary": _summarize(tool_name, params),
-        })
+        summary = _summarize(tool_name, params)
+
+        if tool_name in allowed_names:
+            actions.append({"tool": tool_name, "params": params, "summary": summary})
+        else:
+            excluded_actions.append({
+                "tool": tool_name,
+                "params": params,
+                "summary": summary,
+                "note": (
+                    "Action non autorisée pour le moment -- contactez "
+                    "l'administrateur pour l'activer."
+                ),
+            })
 
     notice = None
-    if not actions:
+    if not actions and not excluded_actions:
         notice = data.get("message", {}).get("content") or None
 
-    return actions, notice
+    return actions, excluded_actions, notice

@@ -43,8 +43,8 @@ class PlanRequest(BaseModel):
 
 @app.post("/plan")
 async def plan(body: PlanRequest):
-    actions, notice = await planner.build_plan(body.prompt)
-    return {"actions": actions, "clarification": notice}
+    actions, excluded_actions, notice = await planner.build_plan(body.prompt)
+    return {"actions": actions, "excluded_actions": excluded_actions, "clarification": notice}
 
 
 class ExecuteRequest(BaseModel):
