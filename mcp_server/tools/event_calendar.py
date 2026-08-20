@@ -8,6 +8,22 @@ importable dans un client calendrier standard.
 
 Écrit sous DATA_DIR/calendar/ et retourne le chemin du fichier comme
 EventRef.
+
+RÉCONCILIATION (2026-08-20, Laurent) : implémentation reprise depuis
+Feature/palier3 (Hugo) -- dev_laurent n'avait qu'un stub
+(`raise NotImplementedError`) pour ce tool. Deux ajustements par rapport
+à l'original de Hugo : (1) `event_date` en `str` + résolution manuelle
+(`_resolve_event_date`) plutôt qu'un type `date` Pydantic strict -- le
+stub de dev_laurent utilisait `date`, mais ça diverge de la convention
+déjà établie ailleurs dans ce projet pour les dates fournies par le LLM
+(voir tools/tracker.py::_resolve_start_date, qui accepte aussi des
+formulations relatives) ; ISO uniquement ici (pas de "lundi prochain"),
+mais toujours via une fonction de résolution explicite plutôt qu'un type
+qui ferait échouer l'appel avec une erreur Pydantic générique et peu
+lisible en cas de format inattendu. (2) DATA_DIR aligné sur la convention
+établie par employee_db.py (`./data` résolu en absolu, pas `/app/data` en
+dur) -- sans effet en Docker (docker-compose.yml fixe DATA_DIR
+explicitement), nécessaire pour les scripts/tests hors conteneur.
 """
 
 import os
@@ -21,8 +37,9 @@ from pydantic import Field
 from mcp_instance import mcp
 from domain_types import EventRef
 
-_DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-_CALENDAR_DIR = _DATA_DIR / "calendar"
+# Même convention que employee_db.py::DATA_DIR.
+DATA_DIR = Path(os.environ.get("DATA_DIR", "./data")).resolve()
+CALENDAR_DIR = DATA_DIR / "calendar"
 
 # Heure de début par défaut pour les événements générés (pas de créneau
 # horaire précisé par le LLM à ce stade -- paramètre de contenu, valeur
@@ -32,7 +49,9 @@ _DEFAULT_START_HOUR = 9
 
 def _resolve_event_date(value: str) -> date:
     """Accepte une date ISO. Lève ValueError plutôt que d'inventer une
-    date -- même principe que tools/tracker.py::_resolve_start_date."""
+    date -- même principe que tools/tracker.py::_resolve_start_date, en
+    plus strict (ISO uniquement, pas de formulation relative comme
+    "lundi" -- pas nécessaire ici, à revoir si un jour utile)."""
     try:
         return date.fromisoformat(value.strip())
     except ValueError as exc:
@@ -82,7 +101,7 @@ def create_calendar_event(
     réunion d'accueil ou une présentation d'équipe. À utiliser seulement
     si l'intention mentionne explicitement un besoin de réunion --
     pas systématiquement pour tout onboarding. Retourne le chemin du
-    fichier .ics généré."""
+    fichier .ics généré (EventRef, alias de str)."""
     parsed_date = _resolve_event_date(event_date)
 
     if duration_minutes <= 0:
@@ -113,9 +132,9 @@ def create_calendar_event(
         "END:VCALENDAR\r\n"
     )
 
-    _CALENDAR_DIR.mkdir(parents=True, exist_ok=True)
+    CALENDAR_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"event_{uid}.ics"
-    filepath = _CALENDAR_DIR / filename
+    filepath = CALENDAR_DIR / filename
     filepath.write_text(ics_content, encoding="utf-8")
 
     return str(filepath)
