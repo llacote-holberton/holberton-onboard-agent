@@ -137,10 +137,16 @@ if plan:
         # (voir les limites documentées côté agent/mcp-server) -- sans ce
         # cas, l'écran affichait "Plan proposé (0 actions)" avec une
         # checklist vide et un bouton désactivé, sans explication.
-        st.warning(
-            "Aucune action pertinente n'a été identifiée pour cette demande. "
-            "Essayez de reformuler avec une intention liée à l'onboarding d'un collaborateur."
-        )
+        if plan.get("clarification"):
+            # Le modèle a explicitement dit pourquoi (ex: outil nécessaire
+            # non autorisé, information manquante) -- on montre son texte
+            # réel plutôt qu'un message générique.
+            st.warning(f"💡 {plan['clarification']}")
+        else:
+            st.warning(
+                "Aucune action pertinente n'a été identifiée pour cette demande. "
+                "Essayez de reformuler avec une intention liée à l'onboarding d'un collaborateur."
+            )
     else:
         st.subheader(f"Plan proposé ({len(plan['actions'])} actions)")
 
@@ -206,6 +212,46 @@ with st.expander("Retrouver la trace d'un plan précédent"):
         entries = fetch_audit_trace(lookup_plan_id.strip())
         if entries is not None:
             render_audit_trace(entries)
+
+# --- Outils autorisés (lecture seule) --------------------------------
+# Reflète la resource MCP "config://allowed-tools" (voir mcp_server/
+# resources.py), via un proxy backend GET /agent/tools -- le frontend ne
+# parle jamais directement à l'agent ou au mcp-server.
+
+with st.expander("🔧 Outils autorisés"):
+    st.caption(
+        "Liste des outils que l'agent LLM peut réellement appeler, "
+        "définie par la variable ALLOWED_TOOLS du serveur MCP."
+    )
+    try:
+        response = requests.get(f"{BACKEND_URL}/agent/tools", timeout=15)
+        response.raise_for_status()
+        permissions = response.json()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**✅ Autorisés**")
+            if permissions.get("allowed"):
+                for name in permissions["allowed"]:
+                    st.write(f"- `{name}`")
+            else:
+                st.caption("Aucun.")
+        with col2:
+            st.markdown("**🚫 Non autorisés**")
+            if permissions.get("registered_but_not_allowed"):
+                for name in permissions["registered_but_not_allowed"]:
+                    st.write(f"- `{name}`")
+            else:
+                st.caption("Aucun.")
+
+        if permissions.get("allowed_but_not_registered"):
+            st.warning(
+                "⚠️ Dans ALLOWED_TOOLS mais introuvables parmi les tools "
+                "réellement définis (faute de frappe ?) : "
+                + ", ".join(f"`{n}`" for n in permissions["allowed_but_not_registered"])
+            )
+    except Exception as exc:
+        st.error(f"Impossible de récupérer la liste des outils : {describe_error(exc)}")
 
 # --- Diagnostic (palier 2) --------------------------------------------
 # Separate from the flow above on purpose: proves the chain frontend ->
