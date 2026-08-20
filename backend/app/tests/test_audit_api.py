@@ -19,13 +19,17 @@ def test_audit_filtered_by_plan_id_returns_only_that_plans_entries_in_order(clie
     monkeypatch.setattr(
         "app.services.agent_client.plan",
         AsyncMock(
-            return_value=[
-                {
-                    "tool": "send_welcome_message",
-                    "params": {"employee_name": "Camille", "team": "Backend", "channel": "team"},
-                    "summary": "Envoyer le mail de bienvenue",
-                }
-            ]
+            return_value={
+                "actions": [
+                    {
+                        "tool": "send_welcome_message",
+                        "params": {"employee_name": "Camille", "team": "Backend", "channel": "team"},
+                        "summary": "Envoyer le mail de bienvenue",
+                    }
+                ],
+                "excluded_actions": [],
+                "clarification": None,
+            }
         ),
     )
 

@@ -4,10 +4,13 @@ Integration tests for the /plans endpoints.
 agent_client.plan() and agent_client.execute() are mocked here on purpose:
 these tests verify the backend's OWN orchestration logic (persistence,
 status transitions, idempotency filtering, audit trail) -- not the real
-Agent AI integration, whose contract is still an unconfirmed assumption
-(see services/agent_client.py). Once that contract is confirmed with Hugo,
-only agent_client.py should need to change; these tests mock at the
-function boundary, not at the HTTP level, so they should keep passing.
+Agent AI integration.
+
+MISE A JOUR (2026-08-20, reconciliation Feature/palier3) : agent_client.plan()
+ne renvoie plus une liste d'actions mais un dict {"actions": [...],
+"excluded_actions": [...], "clarification": str | None} -- voir
+routers/plans.py::create_plan() et services/agent_client.py. Les mocks
+ci-dessous renvoient donc ce dict, pas une liste nue comme avant.
 """
 
 from unittest.mock import AsyncMock
@@ -39,13 +42,17 @@ def test_create_plan_persists_proposed_actions(client, db_session, monkeypatch):
     monkeypatch.setattr(
         "app.services.agent_client.plan",
         AsyncMock(
-            return_value=[
-                {
-                    "tool": "create_onboarding_issue",
-                    "params": {"employee": "Jane Doe"},
-                    "summary": "Create the onboarding issue for Jane Doe",
-                }
-            ]
+            return_value={
+                "actions": [
+                    {
+                        "tool": "create_onboarding_issue",
+                        "params": {"employee": "Jane Doe"},
+                        "summary": "Create the onboarding issue for Jane Doe",
+                    }
+                ],
+                "excluded_actions": [],
+                "clarification": None,
+            }
         ),
     )
 
