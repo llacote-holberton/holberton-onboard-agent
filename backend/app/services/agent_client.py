@@ -46,14 +46,20 @@ _PING_TIMEOUT = httpx.Timeout(10.0)
 _PING_LLM_TIMEOUT = httpx.Timeout(90.0)
 
 
-async def plan(prompt: str) -> list[dict[str, Any]]:
+async def plan(prompt: str) -> dict[str, Any]:
     """Ask the Agent AI to turn a free-text prompt into a list of proposed
-    actions. Returns the raw action dicts (tool/params/summary); the caller
-    persists them as Action rows."""
+    actions. Returns {"actions": [...], "clarification": str | None} --
+    clarification is the model's own explanation when it proposed no
+    action at all (e.g. a needed tool isn't allowed, see mcp_server/
+    resources.py, or essential info is missing)."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{AGENT_AI_URL}/plan", json={"prompt": prompt})
         response.raise_for_status()
-        return response.json()["actions"]
+        data = response.json()
+        return {
+            "actions": data["actions"],
+            "clarification": data.get("clarification"),
+        }
 
 
 async def execute(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -88,5 +94,16 @@ async def ping_llm() -> dict[str, Any]:
     required for palier 2 -- see ping() above."""
     async with httpx.AsyncClient(timeout=_PING_LLM_TIMEOUT) as client:
         response = await client.get(f"{AGENT_AI_URL}/ping-llm")
+        response.raise_for_status()
+        return response.json()
+
+
+async def tool_permissions() -> dict[str, Any]:
+    """Read-only: forwards the agent's GET /tools/permissions, itself a
+    passthrough of mcp-server's "config://allowed-tools" MCP resource (see
+    mcp_server/resources.py). No LLM call -- same cheap connectivity
+    profile as ping(), not ping_llm()."""
+    async with httpx.AsyncClient(timeout=_PING_TIMEOUT) as client:
+        response = await client.get(f"{AGENT_AI_URL}/tools/permissions")
         response.raise_for_status()
         return response.json()

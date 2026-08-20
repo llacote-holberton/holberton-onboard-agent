@@ -83,6 +83,9 @@ class PlanRead(BaseModel):
     status: PlanStatus
     created_at: datetime
     actions: list[ActionRead] = []
+    clarification: Optional[str] = None
+    # Texte du modèle quand aucune action n'a été proposée (ex: outil
+    # nécessaire non autorisé, information manquante). None sinon.
 
 
 # --- Execution / undo ----------------------------------------------------

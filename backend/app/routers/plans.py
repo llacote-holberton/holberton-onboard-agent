@@ -27,13 +27,16 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
     db.add(plan)
 
     try:
-        proposed_actions = await agent_client.plan(body.prompt)
+        plan_response = await agent_client.plan(body.prompt)
     except httpx.HTTPError as exc:
         # Nothing was flushed/committed yet at this point, so there is
         # nothing to roll back -- but calling it explicitly documents the
         # intent and protects this code if that ordering ever changes.
         db.rollback()
         raise HTTPException(status_code=502, detail=f"Agent AI /plan call failed: {exc}") from exc
+
+    proposed_actions = plan_response["actions"]
+    plan.clarification = plan_response.get("clarification")
 
     for proposed in proposed_actions:
         action = Action(

@@ -30,6 +30,11 @@ class Plan(Base):
     prompt = Column(Text, nullable=False)
     status = Column(String, nullable=False, default="in_progress")
     # in_progress | completed
+    clarification = Column(Text, nullable=True)
+    # Texte du modèle quand il n'a proposé aucune action -- ex. un outil
+    # nécessaire n'est pas autorisé (voir mcp_server/resources.py), ou une
+    # information indispensable manque. None dans le cas normal où des
+    # actions ont été proposées.
     created_at = Column(DateTime, default=_now)
 
     actions = relationship("Action", back_populates="plan", cascade="all, delete-orphan")
