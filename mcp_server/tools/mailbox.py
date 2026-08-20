@@ -112,10 +112,22 @@ def send_welcome_message(
             )
         ),
     ] = "team",
+    start_date: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Non utilisé par ce tool -- send_welcome_message n'a pas "
+                "besoin d'une date. Présent uniquement pour absorber, sans "
+                "faire échouer l'appel, un champ que le LLM ajoute parfois "
+                "par erreur (voir NOTE ci-dessous). Toujours ignoré si "
+                "fourni."
+            )
+        ),
+    ] = None,
 ) -> MessageRef:
     """Send a welcome notification about a new hire joining the company.
 
-    NOTE (2026-08-19, repro observée en usage réel) : le LLM a omis
+    NOTE (2026-08-20, repro observée en usage réel) : le LLM a omis
     `channel` entièrement sur un appel réel (missing_argument), alors que
     `employee_name`/`team` étaient corrects. `channel` a donc une valeur
     par défaut ("team") ajoutée après cet incident, contrairement à
@@ -134,6 +146,37 @@ def send_welcome_message(
     par défaut de tracker.py et le `team` manquant d'hier -- pas une
     garantie totale avec un petit modèle local.
 
+    NOUVELLE repro (2026-08-20, run suivant) : le LLM a cette fois ajouté
+    un `start_date` que ce tool n'a jamais eu -- vraisemblablement par
+    analogie avec les autres tools (create_onboarding_issue,
+    create_employee_record, create_calendar_event ont tous une date). Par
+    défaut, Pydantic/FastMCP rejette tout argument non déclaré
+    ("Unexpected keyword argument") -- vérifié directement contre le vrai
+    pydantic 2.13.3 (celui des erreurs reçues cette nuit) : le JSON Schema
+    exposé au LLM ne porte d'ailleurs aucune contrainte
+    "additionalProperties": false qui aurait pu le prévenir en amont, donc
+    ce n'est pas une règle que le modèle enfreint sciemment, juste un
+    schéma qui ne l'empêche pas d'halluciner un champ plausible.
+
+    CORRECTIF REVU (2026-08-20, encore plus tard) : la première version de
+    ce correctif utilisait `**_ignored_extra_fields: Any` pour absorber
+    n'importe quel champ en trop -- validé au niveau Pydantic pur
+    (`pydantic.validate_call`, vraie version 2.13.3), mais le passage réel
+    par FastMCP (`@mcp.tool` -> `call_tool()`) n'avait PAS pu être vérifié
+    ici faute d'accès PyPI, et c'était explicitement documenté comme un
+    point à confirmer. Confirmé depuis, en conditions réelles, par le
+    crash obtenu au démarrage de mcp-server : FastMCP interdit purement et
+    simplement `**kwargs` sur une fonction décorée `@mcp.tool` ("Functions
+    with **kwargs are not supported as tools", levé dans
+    fastmcp/tools/function_parsing.py). Il n'existe donc PAS d'échappatoire
+    générique "j'accepte n'importe quel champ en trop" pour un tool FastMCP
+    -- chaque champ halluciné doit être déclaré explicitement, nommément,
+    comme paramètre optionnel ignoré (voir `start_date` ci-dessus), au cas
+    par cas. Ne pas reproduire le pattern `**kwargs` ailleurs dans ce
+    projet : il fait planter mcp-server au démarrage (import-time), pas
+    juste échouer l'appel du tool concerné -- un tool cassé de cette façon
+    rend tout le serveur MCP inutilisable, pas seulement lui-même.
+
     Args:
         employee_name: Full name of the new hire, used in the message body.
         team: Department the new hire is joining (e.g. "Backend"). Used to
@@ -143,6 +186,9 @@ def send_welcome_message(
             of `team`, "manager" sends only to `team`'s manager, "it"
             always sends to the fixed IT support team regardless of `team`.
             Defaults to "team" if omitted.
+        start_date: Unused. Present only so a hallucinated value doesn't
+            fail the whole call (see the NOTE/CORRECTIF above). Always
+            ignored if provided.
 
     Returns:
         The Message-ID of the e-mail actually sent (MessageRef is a plain
