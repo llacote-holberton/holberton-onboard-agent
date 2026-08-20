@@ -4,6 +4,7 @@ import tools.employee_db
 import tools.mailbox
 import tools.documents
 import tools.event_calendar
+import tools.directory
 import resources  # noqa: F401 -- import pour effet de bord, enregistre la resource "config://allowed-tools"
 import os
 

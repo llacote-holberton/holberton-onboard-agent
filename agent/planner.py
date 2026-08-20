@@ -2,7 +2,7 @@
 Planificateur : découvre les tools disponibles via mcp-server (lecture
 seule, list_tools() + la resource "config://allowed-tools"), les convertit
 au format tool-calling d'Ollama, et les propose au modèle avec le prompt
-utilisateur. N'exécute rien.
+utilisateur. N'exécute AUCUNE action à effet de bord.
 
 Contrat consommé par backend/app/services/agent_client.py :
   build_plan(prompt) -> (actions, excluded_actions, notice), voir
@@ -14,20 +14,65 @@ d'alias sur `team`/`name`, visibilité des champs manquants dans le résumé
 Feature/palier3 de Hugo (liste d'outils autorisés via la resource MCP
 "config://allowed-tools", tri actions/excluded_actions -- voir
 _build_prompt_context ci-dessous). Les deux mécanismes sont orthogonaux et
-ne se recouvrent pas : l'un décide QUELS tools sont proposables et
-lesquels de leurs appels sont exécutables, l'autre rend lisible ce que
-CHAQUE appel proposé contient réellement. Fait à la main faute d'accès
-push pour ouvrir une vraie PR -- à repasser en revue avant merge réel.
+ne se recouvrent pas.
 
-Extension "tools autorisés" : contrairement à la toute première version de
-cette extension, le modèle reçoit maintenant TOUS les tools fonctionnels
+Extension "boucle d'itération" (palier 4, commit final 0cfdbd0 de Hugo,
+après deux DRAFT cbd1235/9b4496b) : construction du plan par relances
+successives, plutôt que d'exiger du modèle qu'il énumère toutes les
+actions d'un coup en une seule réponse (peu fiable avec un petit modèle
+-- confirmé en pratique cette nuit : sur qwen3:0.6b puis même sur
+qwen3:8b avec une demande formulée comme "propose un plan complet", le
+modèle décrochait complètement du format tool_calls structuré et
+répondait en texte libre), on récupère les actions UNE PAR UNE. Après
+chaque tool_call d'action, on relance explicitement le modèle avec
+_NUDGE ("autre chose ?") avant de finaliser. Chaque proposition n'est PAS
+exécutée à ce stade (aucun effet de bord), juste accumulée -- un accusé
+de réception factice est renvoyé pour garder la conversation cohérente
+(Ollama attend une réponse "tool" par tool_call), jusqu'à ce que le
+modèle réponde qu'il n'a plus rien à ajouter.
+
+Un garde-fou (_MAX_TURNS) empêche une boucle infinie si le modèle
+n'arrive jamais à une décision finale -- avec une notice explicite plutôt
+qu'un plan vide silencieux si ce plafond est atteint sans qu'aucune action
+n'ait pu être collectée (voir CORRECTIF dans build_plan).
+
+CORRECTIF (2026-08-20, "mise d'équerre" -- Laurent) appliqué par-dessus le
+commit de Hugo : (1) restauration de _build_prompt_context()/
+_functional_tools() (supprimées dans son commit, remplacées par du code
+inliné) -- mêmes tests qu'avant, mêmes contrats, aucun changement de
+comportement, juste pour garder ce module testable sans mcp-server réel ;
+(2) suppression du print() de debug laissé par erreur dans le commit de
+Hugo ; (3) notice explicite si _MAX_TURNS est atteint sans qu'aucune
+action n'ait été collectée.
+
+CORRECTIF #2 (2026-08-20, "let's go") -- list_teams n'est PLUS proposé au
+modèle du tout (voir _build_prompt_context) : repro nette et reproductible
+cette nuit sur DEUX prompts différents ("Léa" et "Toto"), qwen3:8b y
+compris (pas seulement le 0.6b) -- dès qu'un 6e tool (list_teams) était
+offert, le modèle décrochait systématiquement du format tool_calls
+structuré, MÊME quand il ne l'appelait pas et même sur un prompt trivial,
+alors que le même modèle produisait des tool_calls propres avec
+seulement 5 tools. Conclusion : la fiabilité du tool-calling de ce modèle
+se dégrade avec le nombre d'outils proposés, pas seulement avec la
+longueur du prompt -- demander au LLM de vérifier lui-même l'équipe n'est
+donc pas fiable, quelle que soit la qualité de l'instruction. La
+vérification d'équipe se fait maintenant en CODE (_flag_unknown_teams
+ci-dessous), en appelant list_teams nous-mêmes après coup sur les actions
+déjà collectées -- même source de vérité, zéro dépendance au
+comportement du modèle. Non bloquant par design (pas de retour au
+comportement ultra-restrictif) : une équipe non reconnue reste dans
+`actions`, juste avec un avertissement visible ajouté au résumé, à
+l'humain de trancher. _EXPLORATORY_TOOLS/le code d'exécution exploratoire
+dans la boucle restent en place (inertes pour l'instant) au cas où un
+futur tool exploratoire s'avère compatible avec un compte de tools plus
+faible.
+
+Extension "tools autorisés" : le modèle reçoit TOUS les tools fonctionnels
 (autorisés et non autorisés) comme appelables techniquement -- /plan
-n'exécute jamais rien, donc aucun risque à le laisser "choisir" un tool non
-autorisé. Le tri autorisé/exclu se fait après coup, de façon déterministe,
-dans build_plan() (voir plus bas), plutôt que de compter sur le modèle
-pour décrire correctement en texte ce qu'il n'a pas pu faire -- plus
-robuste qu'un mécanisme reposant sur la fiabilité du texte produit par un
-petit modèle local.
+n'exécute jamais rien à effet de bord, donc aucun risque à le laisser
+"choisir" un tool non autorisé. Le tri autorisé/exclu se fait après coup,
+de façon déterministe, dans build_plan(), plutôt que de compter sur le
+modèle pour décrire correctement en texte ce qu'il n'a pas pu faire.
 """
 
 import json
@@ -42,20 +87,51 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
+# Garde-fou anti-boucle-infinie : nombre maximum d'allers-retours avec
+# Ollama pour un seul /plan (exploration + relances de construction du
+# plan confondues). Au-delà, on finalise avec ce qu'on a accumulé (plus
+# une notice explicite si rien n'a été collecté -- voir build_plan),
+# plutôt que de laisser l'agent tourner indéfiniment.
+_MAX_TURNS = 6
+
+# Tools en LECTURE SEULE, sans aucun effet de bord, que le planificateur
+# exécute lui-même automatiquement pendant la boucle (contrairement aux
+# tools d'action, jamais exécutés ici -- voir executor.py). Distinct de
+# la notion d'autorisation (ALLOWED_TOOLS) : ces tools sont toujours
+# exécutables pendant la planification, peu importe ALLOWED_TOOLS,
+# puisqu'ils ne produisent aucun effet de bord réel.
+_EXPLORATORY_TOOLS = {"list_teams"}
+
+# Relance envoyée après chaque action proposée, pour construire le plan
+# progressivement plutôt que d'exiger une énumération complète en un seul
+# tour (peu fiable en pratique avec un petit modèle -- voir docstring de
+# module).
+_NUDGE = (
+    "As-tu d'autres actions pertinentes à proposer pour compléter cette "
+    "demande ? Si oui, appelle le ou les outils correspondants "
+    "maintenant. Si non, ou si tu as déjà tout proposé, réponds "
+    "uniquement par le mot \"Terminé\", sans appeler aucun outil."
+)
+
 _BASE_SYSTEM_PROMPT = (
-    "Tu es un agent qui prépare l'arrivée de nouveaux collaborateurs. "
-    "À partir de l'intention de l'utilisateur, propose TOUTES les actions "
-    "pertinentes en appelant les outils disponibles -- une intention "
-    "d'onboarding implique souvent plusieurs actions à la fois (créer un "
-    "ticket, notifier l'équipe, générer un document, etc.), pas une seule "
-    "par défaut. Tu ne dois JAMAIS exécuter d'action toi-même : tu "
+    "Tu es un agent qui prépare l'arrivée de nouveaux collaborateurs.\n\n"
+    "Deux cas selon la formulation de la demande :\n"
+    "1. Si l'utilisateur exprime une intention GÉNÉRALE sans lister "
+    "d'actions précises (ex: \"prépare l'arrivée de X\"), propose les "
+    "actions pertinentes que tu juges nécessaires -- une intention "
+    "d'onboarding implique souvent plusieurs actions à la fois. Tu peux "
+    "les proposer une par une, on te redemandera s'il en manque.\n"
+    "2. Si l'utilisateur LISTE EXPLICITEMENT les actions demandées (verbes "
+    "d'action précis comme \"crée X\", \"envoie Y\", \"génère Z\"), "
+    "propose un outil correspondant à chaque action listée, sans en "
+    "ajouter d'autres non mentionnées.\n\n"
+    "Tu ne dois JAMAIS exécuter d'action à effet de bord toi-même : tu "
     "proposes uniquement un plan, qui sera validé par un humain avant "
     "toute exécution.\n\n"
     "Distingue deux types de paramètres :\n"
     "- Paramètres d'IDENTIFICATION (équipe, date, email, identifiant) : "
-    "ne les invente jamais au hasard, mais déduis-les du contexte quand "
-    "c'est raisonnable (ex: l'équipe mentionnée pour une personne "
-    "s'applique à toutes les actions concernant cette même personne).\n"
+    "ne les invente jamais au hasard, déduis-les du contexte quand c'est "
+    "raisonnable.\n"
     "- Paramètres de CONTENU (checklist, titre, corps de message, canal "
     "de notification) : choisis une valeur par défaut raisonnable plutôt "
     "que de sauter l'outil, l'humain validera de toute façon avant "
@@ -65,11 +141,12 @@ _BASE_SYSTEM_PROMPT = (
 
 # Résumés lisibles pour l'écran d'approbation. Légère duplication des noms
 # de tools (le set réel reste découvert dynamiquement) -- acceptable tant
-# qu'on a 5 tools fixes, à revoir si le catalogue devient très dynamique.
+# qu'on a un petit nombre de tools fixes, à revoir si le catalogue devient
+# très dynamique.
 #
 # NOTE (2026-08-20) : {team} a été ajouté au template de
-# create_employee_record -- condition nécessaire pour que le nouveau défaut
-# de `team` (voir mcp_server/tools/employee_db.py::_TEAM_PLACEHOLDER) reste
+# create_employee_record -- condition nécessaire pour que le défaut de
+# `team` (voir mcp_server/tools/employee_db.py::_TEAM_PLACEHOLDER) reste
 # acceptable : la valeur retenue (fournie par le LLM ou le placeholder de
 # repli) doit rester visible ici pour qu'un humain puisse la corriger ou
 # refuser l'action, plutôt que d'écrire silencieusement en base une équipe
@@ -90,11 +167,7 @@ _SUMMARY_TEMPLATES = {
 # création et un tool de compensation (les deux sont juste @mcp.tool dans
 # le même fichier -- voir tools/tracker.py, tools/employee_db.py), donc
 # list_tools() les renvoie tous pêle-mêle : c'est ici, pas côté
-# mcp-server, que le tri se fait avant de les proposer à Ollama. Liste à
-# tenir à jour à la main à chaque nouvelle fonction de compensation
-# implémentée -- pas de convention de nommage (ex. préfixe "undo_") ni de
-# métadonnée FastMCP exploitée pour l'instant, volontairement simple tant
-# qu'il n'y a que deux entrées.
+# mcp-server, que le tri se fait avant de les proposer à Ollama.
 #
 # Orthogonal à la notion d'"autorisation" plus bas (ALLOWED_TOOLS) : une
 # fonction interne reste interne même si ALLOWED_TOOLS la mentionnerait
@@ -111,18 +184,9 @@ _INTERNAL_ONLY_TOOLS = {
 # mcp_server/tools/employee_db.py). Duplication assumée, même famille que
 # _SUMMARY_TEMPLATES et _INTERNAL_ONLY_TOOLS ci-dessus : le schéma JSON que
 # list_tools() renvoie n'expose QUE le nom canonique ("name"), jamais
-# l'alias (confirmé -- voir mcp_server/tests/test_employee_db.py::
-# test_create_employee_record_schema_does_not_expose_employee_name), donc
-# _summarize n'a aucun moyen de le découvrir dynamiquement à partir du
-# schéma seul. À tenir à jour à la main si un alias est ajouté ou retiré
-# côté mcp-server.
-#
-# Repro réelle (2026-08-20) qui a révélé le besoin de cette table : le LLM
-# a appelé create_employee_record avec `employee_name` (accepté sans
-# problème à l'exécution grâce à l'alias) mais le résumé affichait "name
-# non fourni" -- alors que l'info était bien là, juste sous une autre clé.
-# Résultat trompeur pour l'humain qui approuve : ça peut faire refuser une
-# action qui aurait pourtant fonctionné.
+# l'alias, donc _summarize n'a aucun moyen de le découvrir dynamiquement à
+# partir du schéma seul. À tenir à jour à la main si un alias est ajouté ou
+# retiré côté mcp-server.
 _PARAM_ALIASES = {
     "create_employee_record": {"name": ("employee_name",)},
 }
@@ -151,40 +215,21 @@ class _MissingParamAsPlaceholder(dict):
     """Utilisé par _summarize ci-dessous : quand un champ du template n'a
     pas été fourni par le LLM au moment du plan (ex: `team` omis sur
     create_employee_record), affiche un texte explicite au lieu de faire
-    échouer le format() -- voir la note 2026-08-20 juste en dessous pour
-    pourquoi c'est important, pas juste cosmétique.
-
-    Le nom du champ manquant est inclus dans le texte (pas juste "non
-    fourni" générique) -- retour direct de Laurent sur la première version
-    de ce message : deux champs manquants sur la même ligne de résumé
-    (ex: `name` ET `team` sur create_employee_record) affichaient le même
-    texte générique deux fois, impossible de savoir lequel était lequel
-    sans deviner depuis la position dans la phrase."""
+    échouer le format() -- le nom du champ manquant est inclus dans le
+    texte (pas juste "non fourni" générique), pour rester exploitable
+    même quand plusieurs champs manquent sur la même ligne de résumé."""
 
     def __missing__(self, key):
         return f"({key} non fourni — une valeur par défaut sera utilisée à l'exécution)"
 
 
 def _summarize(tool_name: str, params: dict) -> str:
-    # NOTE (2026-08-20) : `params` ici, ce sont les arguments BRUTS renvoyés
-    # par le tool-call du LLM, AVANT toute validation/défaut Pydantic côté
-    # mcp-server (qui n'a lieu qu'à l'exécution, après approbation humaine).
-    # Donc si le LLM omet `team`, ce dict ne contient pas "team" du tout à
-    # ce stade. `create_employee_record` s'appuie maintenant sur un défaut
-    # pour `team` (voir mcp_server/tools/employee_db.py::_TEAM_PLACEHOLDER)
-    # dont la justification explicite est : "visible dans le résumé
-    # d'approbation, l'humain peut refuser si besoin". Un simple
-    # `template.format(**params)` qui lève KeyError sur le champ manquant
-    # et retombe sur le fallback brut ci-dessous NE MENTIONNERAIT MÊME PAS
-    # `team` (le fallback ne liste que les clés présentes dans `params`) --
-    # ça briserait cette garantie en silence. `_MissingParamAsPlaceholder`
-    # comble spécifiquement ce trou : un champ absent du template s'affiche
-    # explicitement comme tel, plutôt que de disparaître du résumé.
-    #
-    # `_resolve_known_aliases` doit passer AVANT : sinon un champ fourni
-    # sous un alias connu (ex: `employee_name` au lieu de `name`) serait lui
-    # aussi affiché comme "non fourni", ce qui serait faux -- voir
-    # _PARAM_ALIASES ci-dessus pour la repro qui a motivé ce correctif.
+    # `params` ici, ce sont les arguments BRUTS renvoyés par le tool-call
+    # du LLM, AVANT toute validation/défaut Pydantic côté mcp-server (qui
+    # n'a lieu qu'à l'exécution, après approbation humaine). `_resolve_
+    # known_aliases` doit passer AVANT le format_map : sinon un champ
+    # fourni sous un alias connu (ex: `employee_name` au lieu de `name`)
+    # serait affiché comme "non fourni", ce qui serait faux.
     params_for_summary = _resolve_known_aliases(tool_name, params)
     template = _SUMMARY_TEMPLATES.get(tool_name)
     if template:
@@ -201,13 +246,9 @@ def _summarize(tool_name: str, params: dict) -> str:
 def _functional_tools(tools: list) -> dict:
     """Filtre les fonctions de compensation internes (_INTERNAL_ONLY_TOOLS)
     hors de la liste brute renvoyée par list_tools() -- le LLM ne doit
-    jamais pouvoir les choisir dans un plan, autorisé ou pas. Fonction pure,
-    extraite de _build_prompt_context() ci-dessous pour rester testable
-    sans dépendre d'un vrai mcp-server ni du package fastmcp -- reprend le
-    rôle que jouait _to_ollama_tools() avant la fusion avec l'extension
-    "tools autorisés" de Hugo (voir docstring de module). Renvoie un dict
-    {name: Tool} plutôt qu'une liste : _build_prompt_context() en a besoin
-    pour croiser avec `allowed_names` par nom."""
+    jamais pouvoir les choisir dans un plan, autorisé ou pas, ni les
+    utiliser comme tool exploratoire. Fonction pure, testable sans
+    dépendre d'un vrai mcp-server ni du package fastmcp."""
     return {t.name: t for t in tools if t.name not in _INTERNAL_ONLY_TOOLS}
 
 
@@ -232,70 +273,207 @@ async def _discover_tool_permissions() -> tuple[list, dict]:
         tools = await mcp_client.list_tools()
         resource_result = await mcp_client.read_resource("config://allowed-tools")
 
-    # read_resource() renvoie une liste de contenus ; on prend le premier
-    # bloc texte/JSON, seul bloc produit par notre resource.
     permissions = json.loads(resource_result[0].text)
 
     return tools, permissions
 
 
-async def _build_prompt_context(prompt: str) -> tuple[list[dict], str, set[str]]:
-    """Donne TOUS les tools fonctionnels (autorisés + non autorisés) comme
-    choix possibles au modèle -- /plan n'exécute jamais rien, donc aucun
-    risque à le laisser "choisir" un tool non autorisé. Le tri
-    autorisé/exclu se fait après coup, de façon déterministe, dans
-    build_plan() ci-dessous, plutôt que de compter sur le modèle pour
-    décrire correctement en texte ce qu'il n'a pas pu faire."""
-    tools, permissions = await _discover_tool_permissions()
-
-    functional_tools = _functional_tools(tools)
-    allowed_names = set(permissions["allowed"]) & functional_tools.keys()
-
-    ollama_tools = [_to_ollama_tool(t) for t in functional_tools.values()]
-
-    system_prompt = _BASE_SYSTEM_PROMPT + (
+def _build_system_prompt() -> str:
+    return _BASE_SYSTEM_PROMPT + (
         f"\n\nNous sommes le {date.today().isoformat()}. "
         "Quand une date est relative (\"lundi prochain\", \"dans 2 semaines\"), "
         "calcule la date exacte au format YYYY-MM-DD avant d'appeler un outil."
     )
 
+
+async def _build_prompt_context(prompt: str) -> tuple[list[dict], str, set[str]]:
+    """Donne TOUS les tools fonctionnels ET AUTORISABLES (autorisés + non
+    autorisés) comme choix possibles au modèle -- /plan n'exécute jamais
+    rien à effet de bord, donc aucun risque à le laisser "choisir" un
+    tool non autorisé. Le tri autorisé/exclu se fait après coup, de façon
+    déterministe, dans build_plan() ci-dessous.
+
+    Les tools EXPLORATOIRES (_EXPLORATORY_TOOLS, ex: list_teams) sont
+    exclus de `ollama_tools` -- donc jamais proposés au modèle du tout --
+    voir CORRECTIF #2 dans le docstring de module : leur simple présence
+    dans la liste cassait la fiabilité du tool-calling structuré, même
+    sur qwen3:8b. Ils restent dans `functional_tools`/`allowed_names`
+    (bookkeeping), juste jamais envoyés à Ollama."""
+    tools, permissions = await _discover_tool_permissions()
+
+    functional_tools = _functional_tools(tools)
+    allowed_names = set(permissions["allowed"]) & functional_tools.keys()
+
+    ollama_tools = [
+        _to_ollama_tool(t) for t in functional_tools.values()
+        if t.name not in _EXPLORATORY_TOOLS
+    ]
+
+    system_prompt = _build_system_prompt()
+
     return ollama_tools, system_prompt, allowed_names
+
+
+async def _fetch_valid_teams() -> set[str] | None:
+    """Appelle list_teams NOUS-MÊMES (pas le LLM) -- voir CORRECTIF #2
+    dans le docstring de module. Renvoie None si l'appel échoue pour
+    n'importe quelle raison (mcp-server indisponible, tool absent, etc.)
+    -- la vérification d'équipe ne doit jamais faire échouer la
+    génération du plan, juste l'enrichir quand elle est possible."""
+    try:
+        async with Client(_MCP_ENDPOINT) as mcp_client:
+            result = await mcp_client.call_tool("list_teams", {})
+        return set(result.data)
+    except Exception:
+        return None
+
+
+async def _flag_unknown_teams(actions: list[dict]) -> None:
+    """Modifie `actions` EN PLACE : ajoute un avertissement visible au
+    `summary` de toute action dont le paramètre `team` ne correspond à
+    aucune équipe réelle -- voir CORRECTIF #2 dans le docstring de
+    module. Volontairement NON bloquant : l'action reste dans `actions`,
+    l'humain décide à l'approbation (refuser, ou corriger côté
+    mcp-server/fixture si l'annuaire est simplement en retard) --
+    contrairement à une exclusion pure et dure qui recréerait le
+    comportement trop restrictif qu'on cherche justement à éviter."""
+    teams_used = {a["params"].get("team") for a in actions if a["params"].get("team")}
+    if not teams_used:
+        return  # aucune action ne porte de paramètre `team` -- rien à vérifier
+
+    valid_teams = await _fetch_valid_teams()
+    if valid_teams is None:
+        return  # vérification indisponible -- on n'invente pas un résultat
+
+    for action in actions:
+        team = action["params"].get("team")
+        if team and team not in valid_teams:
+            action["summary"] = (
+                f"⚠️ équipe « {team} » non reconnue (équipes valides : "
+                f"{', '.join(sorted(valid_teams))}) -- {action['summary']}"
+            )
 
 
 async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     """Retourne (actions, excluded_actions, notice).
 
-    - actions : outils autorisés que le modèle a choisi d'appeler.
-    - excluded_actions : outils NON autorisés que le modèle aurait appelés
-      si rien ne l'en empêchait -- même format que actions, plus une note
-      expliquant pourquoi ce n'est pas exécutable actuellement.
+    Boucle multi-tours (palier 4) : construction du plan par relances
+    successives ("autre chose ?"), plutôt qu'une énumération complète
+    exigée en un seul tour -- voir le docstring du module pour le détail.
+    (L'exécution de tools exploratoires DANS la boucle, ex: list_teams,
+    reste supportée par le code mais n'est plus jamais déclenchée
+    actuellement, puisque _build_prompt_context ne propose plus aucun
+    _EXPLORATORY_TOOLS au modèle -- voir CORRECTIF #2. La vérification
+    d'équipe se fait après coup, en code, via _flag_unknown_teams.)
+
+    - actions : outils autorisés que le modèle a choisi d'appeler,
+      accumulés au fil des tours, avec un avertissement ajouté au
+      `summary` si `team` ne correspond à aucune équipe réelle connue
+      (_flag_unknown_teams, non bloquant).
+    - excluded_actions : outils NON autorisés que le modèle aurait
+      appelés si rien ne l'en empêchait -- même format que actions, plus
+      une note expliquant pourquoi ce n'est pas exécutable actuellement.
     - notice : texte du modèle quand ni l'un ni l'autre n'a été produit
-      (ex: demande hors-scope, aucun outil pertinent du tout)."""
+      (ex: demande hors-scope), OU message explicite si _MAX_TURNS est
+      atteint sans qu'aucune action n'ait pu être collectée."""
     ollama_tools, system_prompt, allowed_names = await _build_prompt_context(prompt)
 
-    async with httpx.AsyncClient(timeout=110) as client:
-        r = await client.post(
-            f"{OLLAMA_API_BASE}/api/chat",
-            json={
-                "model": OLLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "tools": ollama_tools,
-                "think": False,
-                "stream": False,
-                "options": {"temperature": 0.1},
-            },
-        )
-        r.raise_for_status()
-        data = r.json()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
 
-    tool_calls = data.get("message", {}).get("tool_calls", [])
+    collected_action_calls: list[dict] = []
+    final_text: str | None = None
+    concluded = False  # True dès que le modèle répond sans tool_calls (fin normale)
+
+    mcp_client_cm = None
+    mcp_client = None
+    try:
+        async with httpx.AsyncClient(timeout=110) as client:
+            for turn in range(_MAX_TURNS):
+                r = await client.post(
+                    f"{OLLAMA_API_BASE}/api/chat",
+                    json={
+                        "model": OLLAMA_MODEL,
+                        "messages": messages,
+                        "tools": ollama_tools,
+                        "think": False,
+                        "stream": False,
+                        "options": {"temperature": 0.1},
+                    },
+                )
+                r.raise_for_status()
+                data = r.json()
+
+                print(f"[DEBUG] tour {turn} -- {len(ollama_tools)} tools envoyés : {[t['function']['name'] for t in ollama_tools]}", flush=True)
+                print(f"[DEBUG] tour {turn} -- réponse brute du modèle : {data.get('message', {})}", flush=True)
+
+                assistant_message = data.get("message", {})
+                tool_calls = assistant_message.get("tool_calls", [])
+
+                if not tool_calls:
+                    # Réponse finale en texte -- soit rien à proposer du
+                    # tout (premier tour), soit "Terminé" après relance.
+                    final_text = assistant_message.get("content")
+                    concluded = True
+                    print(f"[TOUR {turn + 1}] -> arrêt, texte final: {final_text!r}")
+                    break
+
+
+                messages.append(assistant_message)
+
+                exploratory_calls = [
+                    c for c in tool_calls if c["function"]["name"] in _EXPLORATORY_TOOLS
+                ]
+                action_calls = [
+                    c for c in tool_calls if c["function"]["name"] not in _EXPLORATORY_TOOLS
+                ]
+
+                # Exploration : exécutée réellement (lecture seule, sans
+                # risque), résultat renvoyé pour enrichir le contexte.
+                # Ouverture paresseuse du client MCP -- seulement ici,
+                # pas avant (la plupart des tours n'en ont pas besoin).
+                if exploratory_calls and mcp_client is None:
+                    mcp_client_cm = Client(_MCP_ENDPOINT)
+                    mcp_client = await mcp_client_cm.__aenter__()
+
+                for call in exploratory_calls:
+                    fn = call["function"]
+                    result = await mcp_client.call_tool(fn["name"], fn.get("arguments", {}))
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": fn["name"],
+                        "content": json.dumps(result.data),
+                    })
+
+                # Actions : jamais exécutées ici (aucun effet de bord
+                # pendant la planification) -- juste accumulées, avec un
+                # accusé de réception factice pour garder la conversation
+                # cohérente (chaque tool_call attend une réponse "tool").
+                for call in action_calls:
+                    fn = call["function"]
+                    collected_action_calls.append(call)
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": fn["name"],
+                        "content": "Proposition enregistrée pour le plan.",
+                    })
+
+                if action_calls and not exploratory_calls:
+                    # Au moins une action proposée ce tour, rien à
+                    # explorer en parallèle : on demande explicitement
+                    # s'il reste autre chose avant de finaliser.
+                    messages.append({"role": "user", "content": _NUDGE})
+                # Sinon (exploration seule, ou mélange) -> on reboucle
+                # directement, le modèle reprend avec le contexte enrichi.
+    finally:
+        if mcp_client_cm is not None:
+            await mcp_client_cm.__aexit__(None, None, None)
 
     actions = []
     excluded_actions = []
-    for call in tool_calls:
+    for call in collected_action_calls:
         fn = call["function"]
         tool_name = fn["name"]
         params = fn.get("arguments", {})
@@ -314,8 +492,16 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 ),
             })
 
+    await _flag_unknown_teams(actions)
+
     notice = None
     if not actions and not excluded_actions:
-        notice = data.get("message", {}).get("content") or None
+        if concluded:
+            notice = final_text or None
+        else:
+            notice = (
+                f"Je n'ai pas pu conclure après {_MAX_TURNS} tours -- "
+                "reformulez la demande, ou réessayez."
+            )
 
     return actions, excluded_actions, notice

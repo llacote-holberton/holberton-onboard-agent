@@ -117,22 +117,38 @@ async def test_build_prompt_context_offers_all_functional_tools_to_ollama(monkey
 
 
 async def test_build_plan_sorts_allowed_calls_into_actions(monkeypatch):
+    """Repro (2026-08-20, Laurent) : avec la boucle "une action à la fois
+    + relance" (palier 4, commit final de Hugo), un mock qui renvoie
+    inconditionnellement le même tool_call à CHAQUE tour fait tourner la
+    boucle jusqu'à _MAX_TURNS et collecte la même action en double à
+    chaque relance (6 fois avec _MAX_TURNS=6) -- ce n'est pas un bug de
+    build_plan(), c'est que le mock ne simule pas un modèle qui finit par
+    répondre "Terminé" après _NUDGE. Le mock doit donc renvoyer le
+    tool_call une seule fois (1er appel), puis simuler la fin de la
+    boucle (tool_calls vide) sur les relances suivantes, comme le ferait
+    un vrai modèle qui n'a plus rien à ajouter."""
     async def fake_context(prompt):
         return [], "system prompt", {"create_onboarding_issue"}
 
+    call_count = {"n": 0}
+
     async def fake_post(self, url, json):
+        call_count["n"] += 1
+
         class FakeResponse:
             def raise_for_status(self):
                 pass
 
             def json(self):
-                return {
-                    "message": {
-                        "tool_calls": [
-                            {"function": {"name": "create_onboarding_issue", "arguments": {"employee_name": "Camille"}}},
-                        ]
+                if call_count["n"] == 1:
+                    return {
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "create_onboarding_issue", "arguments": {"employee_name": "Camille"}}},
+                            ]
+                        }
                     }
-                }
+                return {"message": {"content": "Terminé", "tool_calls": []}}
 
         return FakeResponse()
 
@@ -151,23 +167,33 @@ async def test_build_plan_sorts_blocked_calls_into_excluded_actions_with_a_note(
     """The core guarantee of this whole mechanism: a call to a tool NOT in
     `allowed_names` must never land in `actions` (which the backend goes on
     to actually execute) -- it must be quarantined in `excluded_actions`
-    with a human-readable note instead."""
+    with a human-readable note instead.
+
+    Mock à deux temps -- voir la note dans test_build_plan_sorts_allowed_
+    calls_into_actions ci-dessus : nécessaire depuis la boucle "une action
+    à la fois + relance" du palier 4."""
     async def fake_context(prompt):
         return [], "system prompt", {"create_onboarding_issue"}  # create_employee_record NOT allowed
 
+    call_count = {"n": 0}
+
     async def fake_post(self, url, json):
+        call_count["n"] += 1
+
         class FakeResponse:
             def raise_for_status(self):
                 pass
 
             def json(self):
-                return {
-                    "message": {
-                        "tool_calls": [
-                            {"function": {"name": "create_employee_record", "arguments": {"name": "Camille"}}},
-                        ]
+                if call_count["n"] == 1:
+                    return {
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "create_employee_record", "arguments": {"name": "Camille"}}},
+                            ]
+                        }
                     }
-                }
+                return {"message": {"content": "Terminé", "tool_calls": []}}
 
         return FakeResponse()
 
