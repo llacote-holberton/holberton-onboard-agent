@@ -21,6 +21,16 @@ import streamlit as st
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000")
 
+# RECONCILIATION STEP 3bis (2026-08-21, Laurent) -- outermost layer of
+# the coordinated timeout chain (frontend -> backend -> agent -> Ollama).
+# Reads the SAME OLLAMA_CALL_TIMEOUT_SECONDS env var as agent/planner.py
+# and backend/app/config.py (see docker-compose.yml, this service's
+# `environment:` block) and adds this layer's own +30s margin (base +15
+# for the backend layer it wraps, +15 more for this one) -- one setting
+# to change for the whole chain instead of three. See planner.py's
+# _OLLAMA_CALL_TIMEOUT comment for the full rationale.
+_PLAN_GENERATION_TIMEOUT = int(os.environ.get("OLLAMA_CALL_TIMEOUT_SECONDS", "110")) + 30
+
 
 def describe_error(exc: Exception) -> str:
     """requests' HTTPError.__str__() is just the generic status line
@@ -129,7 +139,14 @@ prompt = st.text_area(
 if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
     with st.spinner("Génération du plan…"):
         try:
-            response = requests.post(f"{BACKEND_URL}/plans", json={"prompt": prompt}, timeout=60)
+            # See _PLAN_GENERATION_TIMEOUT above. dev_laurent previously
+            # had a hardcoded 60s here (too low -- would fire before the
+            # backend's own 120s timeout even had a chance to);
+            # Feature/palier3 had 150s (close, but picked independently of
+            # the rest of the chain rather than derived from it).
+            response = requests.post(
+                f"{BACKEND_URL}/plans", json={"prompt": prompt}, timeout=_PLAN_GENERATION_TIMEOUT
+            )
             response.raise_for_status()
             st.session_state.plan = response.json()
             st.session_state.trace = None

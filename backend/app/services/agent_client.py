@@ -25,16 +25,30 @@ from typing import Any
 
 import httpx
 
-from app.config import AGENT_AI_URL
+from app.config import AGENT_AI_URL, AGENT_PLAN_TIMEOUT_SECONDS
 
-_TIMEOUT = httpx.Timeout(120.0)  # Pushed to 120 to avoid crash on "cold start"
+# RECONCILIATION STEP 3 (2026-08-21, Laurent), then 3bis -- coordinated
+# timeout chain across all three HTTP layers (frontend -> backend ->
+# agent -> Ollama). This is the middle layer, wrapping agent/planner.py's
+# per-Ollama-call timeout: AGENT_PLAN_TIMEOUT_SECONDS (from app.config)
+# is derived from the SAME OLLAMA_CALL_TIMEOUT_SECONDS env var the agent
+# reads, +15s margin -- see app/config.py and planner.py's
+# _OLLAMA_CALL_TIMEOUT comment for the full chain and its known blind
+# spot (this margin covers one slow call comfortably, not a pathological
+# multi-turn worst case -- build_plan() can chain up to _MAX_TURNS calls).
+#
+# Also (still) used by execute() below, even though execute() makes no
+# LLM call at all -- kept shared with plan() for simplicity, not split
+# into its own (shorter) timeout for now.
+_TIMEOUT = httpx.Timeout(AGENT_PLAN_TIMEOUT_SECONDS)
 _PING_TIMEOUT = httpx.Timeout(10.0)
 
 # ping_llm() specifically waits on a real LLM round trip (agent -> Ollama),
 # and agent/main.py's own call to Ollama already allows up to 60s (see
 # OLLAMA_API_BASE client in ping-llm). This timeout MUST stay comfortably
 # above that, or the backend gives up on the agent before the agent gives
-# up on Ollama.
+# up on Ollama. (Separate, independent chain from the /plan one above --
+# a lightweight health check, not a real plan generation.)
 #
 # In practice ping_llm() also needs enough RAM for Ollama to actually load
 # a model, which turned out not to be a given (OOM-killed even on the

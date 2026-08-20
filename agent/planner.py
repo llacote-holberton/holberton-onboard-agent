@@ -113,26 +113,34 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
 
-# RECONCILIATION ÉTAPE 3 (2026-08-20, Laurent) -- coordination de la
-# chaîne de timeouts sur les trois couches HTTP (frontend -> backend ->
-# agent -> Ollama). Ce timeout-ci est la couche la PLUS À L'INTÉRIEUR
-# (un seul appel Ollama) -- point de départ de toute la chaîne, chaque
-# couche englobante ajoutant +15s de marge par-dessus celle qu'elle
-# enveloppe directement (voir backend/app/services/agent_client.py::
-# _TIMEOUT et frontend/app.py, POST /plans). Valeur inchangée (110) --
-# déjà identique entre dev_laurent et Feature/palier3, donc rien à
-# arbitrer ici, seulement à documenter comme référence commune.
+# RECONCILIATION ÉTAPE 3 (2026-08-20, Laurent), puis 3bis -- coordination
+# de la chaîne de timeouts sur les trois couches HTTP (frontend ->
+# backend -> agent -> Ollama). Ce timeout-ci est la couche la PLUS À
+# L'INTÉRIEUR (un seul appel Ollama) -- point de départ de toute la
+# chaîne, chaque couche englobante ajoutant +15s de marge par-dessus
+# celle qu'elle enveloppe directement (voir backend/app/config.py::
+# AGENT_PLAN_TIMEOUT_SECONDS et frontend/app.py, POST /plans).
+#
+# ÉTAPE 3bis : lisible via OLLAMA_CALL_TIMEOUT_SECONDS (voir
+# .env.example) plutôt qu'en dur -- un seul réglage à changer pour toute
+# la chaîne (backend et frontend lisent la MÊME variable d'environnement
+# et ajoutent leur propre marge, voir docker-compose.yml) au lieu de
+# recalculer 3 nombres à la main à chaque changement de machine ou de
+# modèle -- exactement ce qu'on a dû retoucher ce soir en passant de
+# qwen3:0.6b à qwen3:8b. Défaut inchangé (110) si la variable est absente
+# -- déjà identique entre dev_laurent et Feature/palier3 avant ce soir.
 #
 # Reste un angle mort assumé (accepté pour l'instant, faute de temps) :
 # ce timeout borne UN SEUL appel Ollama, pas la durée totale de
 # build_plan(), qui peut en théorie enchaîner jusqu'à _MAX_TURNS appels
 # réussis (donc chacun sous ce plafond, mais cumulés). Le pire cas
-# théorique (_MAX_TURNS x 110s) dépasserait largement la marge donnée à
-# la couche backend -- en pratique, un /plan qui enchaînerait autant de
-# tours proches de 110s chacun échouerait de toute façon bruyamment
-# (ReadTimeout explicite) plutôt que silencieusement, donc acceptable
-# comme compromis tant qu'on n'a pas mesuré de latence réelle multi-tours.
-_OLLAMA_CALL_TIMEOUT = 110
+# théorique (_MAX_TURNS x cette valeur) dépasserait largement la marge
+# donnée à la couche backend -- en pratique, un /plan qui enchaînerait
+# autant de tours proches du plafond chacun échouerait de toute façon
+# bruyamment (ReadTimeout explicite) plutôt que silencieusement, donc
+# acceptable comme compromis tant qu'on n'a pas mesuré de latence réelle
+# multi-tours.
+_OLLAMA_CALL_TIMEOUT = int(os.environ.get("OLLAMA_CALL_TIMEOUT_SECONDS", "110"))
 
 # Garde-fou anti-boucle-infinie : nombre maximum d'allers-retours avec
 # Ollama pour un seul /plan (exploration + relances de construction du

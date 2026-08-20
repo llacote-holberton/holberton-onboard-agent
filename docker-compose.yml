@@ -74,6 +74,11 @@ services:
       - OLLAMA_API_BASE=http://${OLLAMA_HOST:-ollama}:${OLLAMA_PORT:-11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
       - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT:-8200}
+      # Timeout (seconds) for a SINGLE agent -> Ollama call -- innermost
+      # layer of the coordinated timeout chain, see .env.example and
+      # agent/planner.py::_OLLAMA_CALL_TIMEOUT. backend and frontend read
+      # this SAME variable below and each add their own margin in code.
+      - OLLAMA_CALL_TIMEOUT_SECONDS=${OLLAMA_CALL_TIMEOUT_SECONDS:-110}
       # Used to tell Python to not output Warning level (only) messages
       # Useful if using Google ADK because we won't configure
       #  "Google Application Default Credentials" so warns it fallbacks on "local".
@@ -97,6 +102,9 @@ services:
       - MCP_SERVER_URL=http://mcp-server:${HBN_MCP_PORT:-8200}
       - LOG_LEVEL=info
       - PYTHONUNBUFFERED=1
+      # Same variable as the agent service above -- backend derives its
+      # own /plan timeout from it (+15s margin, see app/config.py).
+      - OLLAMA_CALL_TIMEOUT_SECONDS=${OLLAMA_CALL_TIMEOUT_SECONDS:-110}
     volumes:
       - ${DATA_HOST_DIR:-./data}:${DATA_DIR:-/app/data}
     depends_on:
@@ -129,6 +137,10 @@ services:
     environment:
       - FRONTEND_PORT=${FRONTEND_PORT:-8501}
       - BACKEND_URL=http://backend:${BACKEND_PORT:-8000}
+      # Same variable as agent/backend above -- frontend derives its own
+      # "Générer le plan" request timeout from it (+30s margin, see
+      # frontend/app.py::_PLAN_GENERATION_TIMEOUT).
+      - OLLAMA_CALL_TIMEOUT_SECONDS=${OLLAMA_CALL_TIMEOUT_SECONDS:-110}
     depends_on:
       - backend
       # Idem que pour backend plus haut : enable once

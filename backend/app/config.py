@@ -37,3 +37,21 @@ DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 # files via the future download endpoints.
 DOCUMENTS_DIR = DATA_DIR / "documents"
 CALENDAR_DIR = DATA_DIR / "calendar"
+
+# --- Coordinated timeout chain (frontend -> backend -> agent -> Ollama) ---
+# RECONCILIATION STEP 3bis (2026-08-21, Laurent) : un seul réglage,
+# OLLAMA_CALL_TIMEOUT_SECONDS (voir .env.example), propage sa valeur sur
+# toute la chaîne -- chaque couche englobante lit la MÊME variable
+# d'environnement (voir docker-compose.yml, `environment:` de agent/
+# backend/frontend) et ajoute sa propre marge en code plutôt que de
+# recalculer 3 nombres séparés à la main à chaque changement de machine
+# ou de modèle (exactement le genre de réglage qu'on a dû retoucher ce
+# soir en passant de qwen3:0.6b à qwen3:8b). Voir agent/planner.py::
+# _OLLAMA_CALL_TIMEOUT pour la couche la plus intérieure et le détail du
+# schéma de marge (+15s par couche englobante directe).
+#
+# AGENT_PLAN_TIMEOUT_SECONDS ci-dessous est la valeur de la couche
+# backend -> agent (utilisée par agent_client.py pour /plan) :
+# OLLAMA_CALL_TIMEOUT_SECONDS + 15s.
+OLLAMA_CALL_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_CALL_TIMEOUT_SECONDS", 110))
+AGENT_PLAN_TIMEOUT_SECONDS = OLLAMA_CALL_TIMEOUT_SECONDS + 15
