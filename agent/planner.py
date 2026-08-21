@@ -168,6 +168,27 @@ def _build_system_prompt() -> str:
     )
 
 
+def _clean_notice_text(text: str | None) -> str | None:
+    """Filtre les cas où le modèle a tenté un appel de tool mal formé
+    (JSON brut dans le texte plutôt qu'un vrai tool_calls structuré --
+    repro observée, notamment sous prompt injection) : plutôt que
+    d'afficher ce fragment technique incompréhensible à l'utilisateur
+    (palier 5, "l'utilisateur doit comprendre quoi faire"), remonte un
+    message générique clair."""
+    if not text:
+        return None
+    stripped = text.strip()
+    looks_like_malformed_tool_call = (
+        stripped.startswith("{") or stripped.startswith("<")
+    ) and ("function" in stripped.lower() or "arguments" in stripped.lower())
+    if looks_like_malformed_tool_call:
+        return (
+            "La demande n'a pas pu être interprétée clairement en une "
+            "action valide. Essayez de reformuler votre intention."
+        )
+    return text
+
+
 async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     """Retourne (actions, excluded_actions, notice).
 
@@ -321,6 +342,6 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
 
     notice = None
     if not actions and not excluded_actions:
-        notice = final_text or None
+        notice = _clean_notice_text(final_text)
 
     return actions, excluded_actions, notice
