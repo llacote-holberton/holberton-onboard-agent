@@ -16,10 +16,23 @@ Contrat consommé par backend/app/services/agent_client.py :
 
 import json
 import os
+import re
 from fastmcp import Client
 
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:8200")
 _MCP_ENDPOINT = f"{MCP_SERVER_URL}/mcp"
+
+# FastMCP préfixe systématiquement ses erreurs par "Error calling tool
+# '<nom>': " avant le vrai message métier -- un détail d'implémentation
+# du protocole, pas une information utile pour l'utilisateur final
+# (palier 5 : "l'utilisateur doit comprendre quoi faire"). On retire ce
+# préfixe pour ne garder que le message métier, déjà clair par ailleurs
+# (ex: "Équipe inconnue : ... vérifiez le nom de l'équipe.").
+_TOOL_ERROR_PREFIX = re.compile(r"^Error calling tool '[^']+':\s*")
+
+
+def _humanize_error(exc: Exception) -> str:
+    return _TOOL_ERROR_PREFIX.sub("", str(exc))
 
 
 async def execute_actions(actions: list[dict]) -> list[dict]:
@@ -58,6 +71,6 @@ async def execute_actions(actions: list[dict]) -> list[dict]:
                     "action_id": action_id,
                     "status": "error",
                     "result": None,
-                    "note": str(exc),
+                    "note": _humanize_error(exc),
                 })
     return results
