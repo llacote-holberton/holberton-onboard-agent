@@ -54,7 +54,11 @@ def _resolve_recipients(team: str, channel: Literal["team", "manager", "it"]) ->
 
     department = directory.get(department_name)
     if department is None:
-        raise ValueError(f"Unknown department '{department_name}' in employees_directory.json")
+        raise ValueError(
+            f"Équipe inconnue : '{department_name}'. Équipes valides : "
+            f"{sorted(directory.keys())}. L'action n'a pas été exécutée -- "
+            "vérifiez le nom de l'équipe."
+        )
 
     if channel == "manager":
         return [department["manager_email"]]
