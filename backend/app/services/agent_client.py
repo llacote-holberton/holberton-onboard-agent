@@ -27,6 +27,49 @@ import httpx
 
 from app.config import AGENT_AI_URL
 
+
+class AgentAIError(Exception):
+    """Raised when the Agent AI actually responded, but with an error
+    status -- as opposed to httpx.RequestError (ConnectError,
+    TimeoutException, ...), which means the backend couldn't reach the
+    agent at all. agent/main.py's /plan and /execute handlers already
+    build a clear, human-readable `detail` for every failure mode they
+    catch (see their own docstrings, "l'utilisateur doit comprendre CE QUI
+    a échoué") -- but a plain `response.raise_for_status()` raises
+    httpx.HTTPStatusError BEFORE anyone reads that JSON body, so the
+    generic "Server error '503 ...' for url '...'" string was reaching the
+    frontend instead (reported live: a clean 503/detail from the agent
+    still showed up as a raw technical message in the UI). This exception
+    carries the agent's own status_code/detail through unchanged so
+    routers/plans.py can forward exactly what the agent said."""
+
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
+async def _post(client: httpx.AsyncClient, url: str, json_body: dict) -> httpx.Response:
+    """POST and raise AgentAIError (with the agent's own `detail`) on any
+    non-2xx response, instead of letting response.raise_for_status() raise
+    httpx.HTTPStatusError and discard the response body -- see AgentAIError
+    above. httpx.RequestError (agent unreachable, timeout, ...) is not
+    caught here and propagates as-is: that's a different failure mode,
+    still handled by routers/plans.py's existing `except httpx.HTTPError`
+    fallback."""
+    response = await client.post(url, json=json_body)
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail") or response.text
+        except ValueError:
+            # Body isn't JSON at all (e.g. the agent process crashed below
+            # FastAPI's own exception handlers) -- fall back to raw text
+            # rather than raising an unrelated JSONDecodeError here.
+            detail = response.text or f"Agent AI returned HTTP {response.status_code} with no detail."
+        raise AgentAIError(response.status_code, detail)
+    return response
+
+
 _TIMEOUT = httpx.Timeout(240.0)
 # Pushé à 240 (était 120) : /plan peut désormais enchaîner jusqu'à
 # _MAX_TURNS=8 tours (exploration + relances successives, voir
@@ -68,8 +111,7 @@ async def plan(prompt: str) -> dict[str, Any]:
       surfaced in the UI for observability (palier 5) -- "why did the
       agent do that" answerable from the app, not the logs."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        response = await client.post(f"{AGENT_AI_URL}/plan", json={"prompt": prompt})
-        response.raise_for_status()
+        response = await _post(client, f"{AGENT_AI_URL}/plan", {"prompt": prompt})
         data = response.json()
         return {
             "actions": data["actions"],
@@ -85,8 +127,7 @@ async def execute(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     the agent's side -- no new LLM call, see docker-compose.yml's `agent`
     service comment."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        response = await client.post(f"{AGENT_AI_URL}/execute", json={"actions": actions})
-        response.raise_for_status()
+        response = await _post(client, f"{AGENT_AI_URL}/execute", {"actions": actions})
         return response.json()["results"]
 
 

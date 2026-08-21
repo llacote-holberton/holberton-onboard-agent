@@ -15,6 +15,42 @@ from unittest.mock import AsyncMock
 import httpx
 
 from app.models import Action, Plan
+from app.services.agent_client import AgentAIError
+
+
+def test_create_plan_forwards_the_agent_ais_own_status_and_detail(client, db_session, monkeypatch):
+    """Reproduces a real bug seen in the live UI: the agent's /plan handler
+    already returns a clear, human-readable `detail` for a dependency
+    failure (e.g. 503 "Un service dont l'agent dépend est actuellement
+    injoignable...", see agent/main.py) -- but agent_client.plan() used to
+    call response.raise_for_status(), which raises httpx.HTTPStatusError
+    BEFORE reading that JSON body, so routers/plans.py's generic `except
+    httpx.HTTPError` branch wrapped it into an opaque 502 built from the
+    raw httpx exception string ("Server error '503 ...' for url ...").
+    The frontend ended up displaying that technical string instead of the
+    agent's own message. Must come back as the agent's exact status code
+    and detail, unchanged."""
+    monkeypatch.setattr(
+        "app.services.agent_client.plan",
+        AsyncMock(
+            side_effect=AgentAIError(
+                503,
+                "Un service dont l'agent dépend est actuellement injoignable "
+                "(serveur d'outils ou modèle IA). Réessayez dans quelques "
+                "instants, ou contactez l'administrateur si le problème persiste.",
+            )
+        ),
+    )
+
+    response = client.post("/plans", json={"prompt": "onboard Jane Doe"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Un service dont l'agent dépend est actuellement injoignable "
+        "(serveur d'outils ou modèle IA). Réessayez dans quelques "
+        "instants, ou contactez l'administrateur si le problème persiste."
+    )
+    assert db_session.query(Plan).count() == 0  # nothing persisted on failure
 
 
 def test_create_plan_returns_502_when_agent_ai_is_unreachable(client, db_session, monkeypatch):
@@ -134,6 +170,41 @@ def test_execute_dispatches_approved_actions_and_completes_plan(client, db_sessi
     db_session.refresh(plan)
     assert action.status == "executed"
     assert plan.status == "completed"
+
+
+def test_execute_forwards_the_agent_ais_own_status_and_detail(client, db_session, monkeypatch):
+    """Same bug/fix as test_create_plan_forwards_the_agent_ais_own_status_and_detail
+    above, on the /execute path -- see AgentAIError's docstring."""
+    plan = Plan(prompt="onboard Jane Doe")
+    action = Action(
+        tool="create_onboarding_issue",
+        params={"employee": "Jane Doe"},
+        summary="Create the onboarding issue",
+        idempotency_key="key-1",
+        status="approved",
+    )
+    plan.actions.append(action)
+    db_session.add(plan)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.agent_client.execute",
+        AsyncMock(
+            side_effect=AgentAIError(
+                503,
+                "Le serveur d'outils est actuellement injoignable, impossible "
+                "d'exécuter les actions. Réessayez dans quelques instants.",
+            )
+        ),
+    )
+
+    response = client.post(f"/plans/{plan.id}/execute")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Le serveur d'outils est actuellement injoignable, impossible "
+        "d'exécuter les actions. Réessayez dans quelques instants."
+    )
 
 
 def test_execute_records_error_status_when_agent_reports_a_failure(client, db_session, monkeypatch):

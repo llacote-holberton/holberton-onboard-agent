@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models import Action, Plan
 from app.schemas import ExecuteResult, PlanCreateRequest, PlanRead
 from app.services import agent_client
+from app.services.agent_client import AgentAIError
 from app.services.audit import log_action_status
 from app.services.idempotency import compute_idempotency_key
 
@@ -28,10 +29,22 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
 
     try:
         plan_response = await agent_client.plan(body.prompt)
+    except AgentAIError as exc:
+        # The agent responded with its own clear, human-readable detail
+        # (see agent/main.py's /plan handler) -- forward it and its status
+        # code unchanged, rather than squashing it into a generic 502
+        # built from the raw httpx exception (see AgentAIError's own
+        # docstring for the bug this fixes: that detail used to never
+        # reach the frontend at all).
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except httpx.HTTPError as exc:
         # Nothing was flushed/committed yet at this point, so there is
         # nothing to roll back -- but calling it explicitly documents the
         # intent and protects this code if that ordering ever changes.
+        # This branch is for when the agent couldn't even be reached
+        # (network failure) -- AgentAIError above handles the case where
+        # it responded with an error status.
         db.rollback()
         raise HTTPException(status_code=502, detail=f"Agent AI /plan call failed: {exc}") from exc
 
@@ -106,6 +119,11 @@ async def execute_plan(plan_id: str, db: Session = Depends(get_db)):
             dispatched = await agent_client.execute(
                 [{"action_id": a.id, "tool": a.tool, "params": a.params} for a in to_dispatch]
             )
+        except AgentAIError as exc:
+            # Same reasoning as create_plan() above: forward the agent's
+            # own status/detail instead of a generic wrapper string.
+            db.rollback()
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         except httpx.HTTPError as exc:
             # Actions already resolved as duplicates above are rolled back
             # too -- the whole execute call fails together, the client can
