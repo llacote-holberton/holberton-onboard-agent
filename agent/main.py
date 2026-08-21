@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import os
@@ -68,7 +68,46 @@ class PlanRequest(BaseModel):
 
 @app.post("/plan")
 async def plan(body: PlanRequest):
-    actions, excluded_actions, notice, trace = await planner.build_plan(body.prompt)
+    """Palier 5 -- durcissement : catch explicitement les pannes de
+    dépendance (serveur MCP injoignable, Ollama injoignable) pour
+    retourner un message clair plutôt qu'un 500 générique sans contexte.
+    L'utilisateur doit comprendre CE QUI a échoué, pas juste QU'IL Y A eu
+    un échec (voir palier 5, "erreurs visibles côté utilisateur")."""
+    try:
+        actions, excluded_actions, notice, trace = await planner.build_plan(body.prompt)
+    except httpx.ConnectError as exc:
+        logger.error("Connexion impossible (MCP ou Ollama) : %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Un service dont l'agent dépend est actuellement injoignable "
+                "(serveur d'outils ou modèle IA). Réessayez dans quelques "
+                "instants, ou contactez l'administrateur si le problème persiste."
+            ),
+        ) from exc
+    except httpx.TimeoutException as exc:
+        logger.error("Timeout pendant la planification : %s", exc)
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "La génération du plan a pris trop de temps et a été "
+                "interrompue. Réessayez ; si le problème persiste, le "
+                "modèle IA est peut-être surchargé ou indisponible."
+            ),
+        ) from exc
+    except Exception as exc:
+        # Filet de sécurité générique : on ne laisse jamais une exception
+        # non prévue remonter brute (500 sans contexte) -- même sans
+        # savoir précisément quoi s'est passé, on le dit clairement.
+        logger.exception("Erreur inattendue pendant la planification")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Une erreur inattendue est survenue pendant la génération "
+                "du plan. L'équipe technique a été notifiée (voir les logs)."
+            ),
+        ) from exc
+
     return {
         "actions": actions,
         "excluded_actions": excluded_actions,
@@ -83,5 +122,17 @@ class ExecuteRequest(BaseModel):
 
 @app.post("/execute")
 async def execute(body: ExecuteRequest):
-    results = await executor.execute_actions(body.actions)
+    try:
+        results = await executor.execute_actions(body.actions)
+    except httpx.ConnectError as exc:
+        logger.error("Connexion impossible au serveur MCP pendant l'exécution : %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Le serveur d'outils est actuellement injoignable, "
+                "impossible d'exécuter les actions. Réessayez dans "
+                "quelques instants."
+            ),
+        ) from exc
+
     return {"results": results}
