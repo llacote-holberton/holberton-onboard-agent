@@ -29,13 +29,14 @@ from app.config import AGENT_AI_URL, AGENT_PLAN_TIMEOUT_SECONDS
 
 # RECONCILIATION STEP 3 (2026-08-21, Laurent), then 3bis -- coordinated
 # timeout chain across all three HTTP layers (frontend -> backend ->
-# agent -> Ollama). This is the middle layer, wrapping agent/planner.py's
-# per-Ollama-call timeout: AGENT_PLAN_TIMEOUT_SECONDS (from app.config)
-# is derived from the SAME OLLAMA_CALL_TIMEOUT_SECONDS env var the agent
-# reads, +15s margin -- see app/config.py and planner.py's
-# _OLLAMA_CALL_TIMEOUT comment for the full chain and its known blind
-# spot (this margin covers one slow call comfortably, not a pathological
-# multi-turn worst case -- build_plan() can chain up to _MAX_TURNS calls).
+# agent -> LLM provider, whichever LLM_MODEL_NAME designates). This is
+# the middle layer, wrapping agent/planner.py's per-LLM-call timeout:
+# AGENT_PLAN_TIMEOUT_SECONDS (from app.config) is derived from the SAME
+# LLM_CALL_TIMEOUT_SECONDS env var the agent reads, +15s margin -- see
+# app/config.py and planner.py's _LLM_CALL_TIMEOUT comment for the full
+# chain and its known blind spot (this margin covers one slow call
+# comfortably, not a pathological multi-turn worst case -- build_plan()
+# can chain up to _MAX_TURNS calls).
 #
 # Also (still) used by execute() below, even though execute() makes no
 # LLM call at all -- kept shared with plan() for simplicity, not split
@@ -60,6 +61,39 @@ _PING_TIMEOUT = httpx.Timeout(10.0)
 _PING_LLM_TIMEOUT = httpx.Timeout(90.0)
 
 
+class AgentAIError(httpx.HTTPError):
+    """DURCISSEMENT (2026-08-21, Laurent) -- raised instead of plain
+    httpx.HTTPStatusError when the Agent AI responds with an error status.
+    Subclasses httpx.HTTPError so existing `except httpx.HTTPError` call
+    sites (see routers/plans.py) keep catching it unchanged, but carries
+    the agent's own already-human-readable `detail` message (see
+    agent/main.py::_describe_llm_error) instead of the generic status
+    line httpx.HTTPStatusError.__str__() produces by default (e.g. "502
+    Server Error: Bad Gateway for url: ...", which silently drops the
+    actually useful explanation of WHY -- missing/invalid API key,
+    network unreachable, timeout... -- see the DURCISSEMENT palier,
+    scénario 3: "je coupe le réseau / fausse clé, l'app doit le dire.")"""
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+
+
+def _raise_for_status_with_detail(response: httpx.Response) -> None:
+    """Like response.raise_for_status(), but prefers the agent's own JSON
+    `detail` body (already a clear, specific explanation) over the
+    generic status line when one is present."""
+    if response.status_code < 400:
+        return
+    detail = None
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        pass
+    if detail:
+        raise AgentAIError(f"Agent AI a répondu {response.status_code} : {detail}")
+    response.raise_for_status()  # fallback: no JSON detail, generic message
+
+
 async def plan(prompt: str) -> dict[str, Any]:
     """Ask the Agent AI to turn a free-text prompt into a list of proposed
     actions. Returns {"actions": [...], "excluded_actions": [...],
@@ -72,7 +106,7 @@ async def plan(prompt: str) -> dict[str, Any]:
       excluded_actions were produced at all (e.g. off-topic prompt)."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{AGENT_AI_URL}/plan", json={"prompt": prompt})
-        response.raise_for_status()
+        _raise_for_status_with_detail(response)
         data = response.json()
         return {
             "actions": data["actions"],
@@ -88,7 +122,7 @@ async def execute(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     service comment."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{AGENT_AI_URL}/execute", json={"actions": actions})
-        response.raise_for_status()
+        _raise_for_status_with_detail(response)
         return response.json()["results"]
 
 

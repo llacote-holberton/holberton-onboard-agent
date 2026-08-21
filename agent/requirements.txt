@@ -2,3 +2,10 @@ fastapi
 httpx
 uvicorn
 fastmcp==3.4.7
+# LLM CONFIGURATION -- AGNOSTIQUE (2026-08-21, Laurent) : abstraction
+# multi-fournisseurs (Anthropic, OpenAI, Ollama, Nvidia NIM, Gemini,
+# Bedrock, Azure...) derrière une seule interface -- voir planner.py's
+# module docstring pour le detail. Un seul identifiant de modèle
+# (LLM_MODEL_NAME, format "<provider>/<model>") suffit à changer de
+# fournisseur, aucune dépendance supplémentaire à ajouter par fournisseur.
+litellm
