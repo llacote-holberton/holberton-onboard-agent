@@ -129,7 +129,7 @@ prompt = st.text_area(
 if st.button("Générer le plan", type="primary", disabled=not prompt.strip()):
     with st.spinner("Génération du plan…"):
         try:
-            response = requests.post(f"{BACKEND_URL}/plans", json={"prompt": prompt}, timeout=150)
+            response = requests.post(f"{BACKEND_URL}/plans", json={"prompt": prompt}, timeout=260)
             response.raise_for_status()
             st.session_state.plan = response.json()
             st.session_state.trace = None
@@ -176,6 +176,7 @@ if plan:
                 st.markdown(f"~~{excluded['summary']}~~")
                 st.caption(f"⚠️ {excluded.get('note', 'Action non autorisée.')}")
 
+    if plan["actions"] or plan.get("excluded_actions"):
         if st.button("Exécuter la sélection", type="primary", disabled=selected_count == 0):
             with st.spinner("Exécution…"):
                 try:
@@ -198,6 +199,24 @@ if plan:
                 except Exception as exc:
                     st.error(f"Échec de l'exécution : {describe_error(exc)}")
 
+    # --- Observabilité (palier 5) : "pourquoi l'agent a fait ça",
+    # vérifiable dans l'app -- pas seulement dans les logs Docker. Placé
+    # après le bouton d'exécution, pour ne pas s'interposer entre la
+    # checklist et l'action principale de la page.
+    _KIND_ICONS = {"exploration": "🔎", "proposal": "✅", "final": "🏁"}
+    _KIND_LABELS = {"exploration": "Consultation", "proposal": "Proposition", "final": "Décision finale"}
+    with st.expander("🔍 Pourquoi ce plan ?", expanded=False):
+        if plan.get("trace"):
+            for entry in plan["trace"]:
+                icon = _KIND_ICONS.get(entry["kind"], "•")
+                label = _KIND_LABELS.get(entry["kind"], entry["kind"])
+                tool_part = f" `{entry['tool']}`" if entry.get("tool") else ""
+                st.write(f"{icon} **Tour {entry['turn']}** · {label}{tool_part}")
+                st.caption(entry["detail"])
+        else:
+            st.caption("Aucune trace disponible pour ce plan.")
+
+    if plan["actions"] or plan.get("excluded_actions"):
         if st.session_state.trace is not None:
             st.subheader("Traçabilité de ce plan")
             st.caption(f"Plan `{plan['id']}` — du plus ancien au plus récent (GET /audit?plan_id=...).")

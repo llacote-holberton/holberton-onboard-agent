@@ -27,7 +27,15 @@ import httpx
 
 from app.config import AGENT_AI_URL
 
-_TIMEOUT = httpx.Timeout(120.0)  # Pushed to 120 to avoid crash on "cold start"
+_TIMEOUT = httpx.Timeout(240.0)
+# Pushé à 240 (était 120) : /plan peut désormais enchaîner jusqu'à
+# _MAX_TURNS=8 tours (exploration + relances successives, voir
+# agent/planner.py) -- même avec un modèle chaud (~10-15s/tour), le
+# cumul peut dépasser l'ancien budget de 120s sans qu'aucun tour
+# individuel ne soit anormalement lent. /execute n'a pas besoin d'un
+# budget aussi large (dispatch mécanique, pas de boucle LLM), mais
+# partage cette constante par simplicité -- pas de risque, juste une
+# limite haute plus généreuse que nécessaire pour ce cas.
 _PING_TIMEOUT = httpx.Timeout(10.0)
 
 # ping_llm() specifically waits on a real LLM round trip (agent -> Ollama),
@@ -49,13 +57,16 @@ _PING_LLM_TIMEOUT = httpx.Timeout(90.0)
 async def plan(prompt: str) -> dict[str, Any]:
     """Ask the Agent AI to turn a free-text prompt into a list of proposed
     actions. Returns {"actions": [...], "excluded_actions": [...],
-    "clarification": str | None}:
+    "clarification": str | None, "trace": [...]}:
     - actions: allowed tools the model chose to call.
     - excluded_actions: NOT-allowed tools the model would have called,
       same shape plus a "note" explaining why it can't run (see
       mcp_server/resources.py, agent/planner.py).
     - clarification: the model's own text when neither actions nor
-      excluded_actions were produced at all (e.g. off-topic prompt)."""
+      excluded_actions were produced at all (e.g. off-topic prompt).
+    - trace: turn-by-turn planning trace (exploration/proposal/final),
+      surfaced in the UI for observability (palier 5) -- "why did the
+      agent do that" answerable from the app, not the logs."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{AGENT_AI_URL}/plan", json={"prompt": prompt})
         response.raise_for_status()
@@ -64,6 +75,7 @@ async def plan(prompt: str) -> dict[str, Any]:
             "actions": data["actions"],
             "excluded_actions": data.get("excluded_actions", []),
             "clarification": data.get("clarification"),
+            "trace": data.get("trace", []),
         }
 
 

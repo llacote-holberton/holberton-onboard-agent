@@ -37,6 +37,11 @@ class Plan(Base):
     # Outils NON autorisés que le modèle aurait appelés si rien ne l'en
     # empêchait -- même format que Action (tool/params/summary), plus une
     # note explicative. Voir mcp_server/resources.py, agent/planner.py.
+    trace = Column(JSON, nullable=False, default=list)
+    # Trace tour par tour de la planification (exploration/proposition/
+    # final), pour l'observabilité côté UI (palier 5) -- "pourquoi
+    # l'agent a fait ça" doit être vérifiable dans l'app, pas les logs.
+    # Chaque entrée : {"turn": int, "kind": str, "tool": str|None, "detail": str}.
     created_at = Column(DateTime, default=_now)
 
     actions = relationship("Action", back_populates="plan", cascade="all, delete-orphan")
@@ -115,3 +120,4 @@ class AuditLog(Base):
         `joinedload(AuditLog.action)` dans la query du routeur).
         """
         return self.action.tool
+    

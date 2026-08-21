@@ -89,6 +89,10 @@ class PlanRead(BaseModel):
     excluded_actions: list[dict[str, Any]] = []
     # Outils NON autorisés que le modèle aurait appelés -- chaque entrée :
     # {"tool": str, "params": dict, "summary": str, "note": str}.
+    trace: list[dict[str, Any]] = []
+    # Trace tour par tour de la planification -- chaque entrée :
+    # {"turn": int, "kind": "exploration"|"proposal"|"final", "tool": str|None, "detail": str}.
+    # Observabilité palier 5 : affichée dans l'UI, pas seulement les logs.
 
 
 # --- Execution / undo ----------------------------------------------------

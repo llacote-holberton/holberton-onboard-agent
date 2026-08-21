@@ -168,6 +168,17 @@ def _build_system_prompt() -> str:
     )
 
 
+def _summarize_result(data) -> str:
+    """Résumé lisible d'un résultat de tool exploratoire, pour la trace
+    affichée dans l'UI -- pas le JSON brut, une phrase courte."""
+    if isinstance(data, list):
+        items = ", ".join(str(x) for x in data[:6])
+        suffix = "..." if len(data) > 6 else ""
+        return f"{items}{suffix}"
+    text = str(data)
+    return text[:150] + ("..." if len(text) > 150 else "")
+
+
 def _clean_notice_text(text: str | None) -> str | None:
     """Filtre les cas où le modèle a tenté un appel de tool mal formé
     (JSON brut dans le texte plutôt qu'un vrai tool_calls structuré --
@@ -189,7 +200,7 @@ def _clean_notice_text(text: str | None) -> str | None:
     return text
 
 
-async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
+async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None, list[dict]]:
     """Retourne (actions, excluded_actions, notice).
 
     Boucle multi-tours (palier 4) combinant deux mécanismes -- voir le
@@ -204,7 +215,9 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
       appelés si rien ne l'en empêchait -- même format que actions, plus
       une note expliquant pourquoi ce n'est pas exécutable actuellement.
     - notice : texte du modèle quand ni l'un ni l'autre n'a été produit
-      (ex: demande hors-scope, aucun outil pertinent du tout)."""
+      (ex: demande hors-scope, aucun outil pertinent du tout).
+    - trace : séquence tour par tour (exploration/proposition/final),
+      exposée jusque dans l'UI pour l'observabilité (palier 5)."""
     async with Client(_MCP_ENDPOINT) as mcp_client:
         tools = await mcp_client.list_tools()
         resource_result = await mcp_client.read_resource("config://allowed-tools")
@@ -221,6 +234,10 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
 
         collected_action_calls: list[dict] = []
         final_text: str | None = None
+        trace: list[dict] = []
+        # Trace de la boucle, exposée jusque dans l'UI (pas seulement les
+        # logs Docker) -- palier 5, observabilité : "pourquoi l'agent a
+        # fait ça" doit être visible dans l'app, pas dans le code.
 
         async with httpx.AsyncClient(timeout=110) as client:
             for turn in range(_MAX_TURNS):
@@ -241,13 +258,16 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 assistant_message = data.get("message", {})
                 tool_calls = assistant_message.get("tool_calls", [])
 
-                print(f"[TOUR {turn + 1}] tools appelés: {[c['function']['name'] for c in tool_calls]}")
-
                 if not tool_calls:
                     # Réponse finale en texte -- soit rien à proposer du
                     # tout (premier tour), soit "Terminé" après relance.
                     final_text = assistant_message.get("content")
-                    print(f"[TOUR {turn + 1}] -> arrêt, texte final: {final_text!r}")
+                    trace.append({
+                        "turn": turn + 1,
+                        "kind": "final",
+                        "tool": None,
+                        "detail": _clean_notice_text(final_text) or "(aucune action nécessaire)",
+                    })
                     break
 
                 messages.append(assistant_message)
@@ -264,6 +284,13 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 for call in exploratory_calls:
                     fn = call["function"]
                     result = await mcp_client.call_tool(fn["name"], fn.get("arguments", {}))
+                    result_summary = _summarize_result(result.data)
+                    trace.append({
+                        "turn": turn + 1,
+                        "kind": "exploration",
+                        "tool": fn["name"],
+                        "detail": f"Résultat consulté : {result_summary}",
+                    })
                     messages.append({
                         "role": "tool",
                         "tool_name": fn["name"],
@@ -277,6 +304,12 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 for call in action_calls:
                     fn = call["function"]
                     collected_action_calls.append(call)
+                    trace.append({
+                        "turn": turn + 1,
+                        "kind": "proposal",
+                        "tool": fn["name"],
+                        "detail": _summarize(fn["name"], fn.get("arguments", {})),
+                    })
                     messages.append({
                         "role": "tool",
                         "tool_name": fn["name"],
@@ -344,4 +377,4 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     if not actions and not excluded_actions:
         notice = _clean_notice_text(final_text)
 
-    return actions, excluded_actions, notice
+    return actions, excluded_actions, notice, trace
