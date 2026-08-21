@@ -1,0 +1,5 @@
+# Dev-only dependencies (tests). Not installed in the runtime image --
+# Dockerfile only installs requirements.txt, to keep it lean. Mirrors
+# mcp_server/requirements-dev.txt / backend/requirements-dev.txt.
+-r requirements.txt
+pytest>=8.0

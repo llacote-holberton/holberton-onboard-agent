@@ -203,8 +203,13 @@ if plan:
     # vérifiable dans l'app -- pas seulement dans les logs Docker. Placé
     # après le bouton d'exécution, pour ne pas s'interposer entre la
     # checklist et l'action principale de la page.
-    _KIND_ICONS = {"exploration": "🔎", "proposal": "✅", "final": "🏁"}
-    _KIND_LABELS = {"exploration": "Consultation", "proposal": "Proposition", "final": "Décision finale"}
+    _KIND_ICONS = {"exploration": "🔎", "proposal": "✅", "final": "🏁", "blocked": "🛡️"}
+    _KIND_LABELS = {
+        "exploration": "Consultation",
+        "proposal": "Proposition",
+        "final": "Décision finale",
+        "blocked": "Rejeté avant appel au modèle",
+    }
     with st.expander("🔍 Pourquoi ce plan ?", expanded=False):
         if plan.get("trace"):
             for entry in plan["trace"]:
