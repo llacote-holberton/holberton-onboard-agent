@@ -233,6 +233,100 @@ async def test_build_plan_returns_notice_when_no_tool_call_at_all(monkeypatch):
     assert notice == "Cette demande ne concerne pas l'onboarding."
 
 
+async def test_build_plan_retries_once_when_model_narrates_instead_of_calling_a_tool(monkeypatch):
+    """RECONCILIATION 2026-08-20 (Laurent) -- voir docstring de module,
+    section "narration sans tool_call". Repro réelle (session de debug
+    avec Hugo, confirmée par les print() de debug côté planner.py) : au
+    tout premier tour, le modèle décrit son plan en prose au lieu
+    d'appeler un tool -- avant ce correctif, build_plan() concluait
+    immédiatement avec ce texte comme `notice`, sans jamais donner au
+    modèle la chance (pourtant promise par le system prompt) de vraiment
+    appeler l'outil. Ce test verrouille la relance unique :
+    narration (tour 1, aucun tool_call) -> relance -> le modèle appelle
+    bien le tool au tour 2 -> action collectée normalement."""
+    async def fake_context(prompt):
+        return [], "system prompt", {"create_onboarding_issue"}
+
+    call_count = {"n": 0}
+
+    async def fake_post(self, url, json):
+        call_count["n"] += 1
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if call_count["n"] == 1:
+                    return {
+                        "message": {
+                            "tool_calls": [],
+                            "content": (
+                                "Voici les actions pertinentes que je propose : "
+                                "1. Créer le ticket onboarding. "
+                                "Je vais maintenant proposer les outils correspondants."
+                            ),
+                        }
+                    }
+                if call_count["n"] == 2:
+                    return {
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "create_onboarding_issue", "arguments": {"employee_name": "Adam"}}},
+                            ]
+                        }
+                    }
+                return {"message": {"content": "Terminé", "tool_calls": []}}
+
+        return FakeResponse()
+
+    monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+
+    assert call_count["n"] == 3  # narration + relance -> tool_call + conclusion "Terminé"
+    assert len(actions) == 1
+    assert actions[0]["tool"] == "create_onboarding_issue"
+    assert excluded_actions == []
+    assert notice is None
+
+
+async def test_build_plan_only_retries_narration_once(monkeypatch):
+    """La relance de narration (voir test ci-dessus) ne doit se déclencher
+    QU'au tout premier tour -- un modèle qui narre encore après la relance
+    doit conclure normalement, pas repartir pour un tour supplémentaire
+    (sinon un vrai refus hors-sujet consommerait deux tours pour rien à
+    chaque appel, voire plus si la garde `turn == 0` n'était pas
+    respectée)."""
+    async def fake_context(prompt):
+        return [], "system prompt", set()
+
+    call_count = {"n": 0}
+
+    async def fake_post(self, url, json):
+        call_count["n"] += 1
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"tool_calls": [], "content": f"Toujours pas de tool_call (appel {call_count['n']})."}}
+
+        return FakeResponse()
+
+    monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+    actions, excluded_actions, notice = await planner.build_plan("un prompt hors-sujet")
+
+    assert call_count["n"] == 2  # 1 relance seulement, pas plus
+    assert actions == []
+    assert excluded_actions == []
+    assert notice == "Toujours pas de tool_call (appel 2)."
+
+
 # --- _summarize: visibility of the `team` default on create_employee_record
 #
 # 2026-08-20, plus tard la même session : mcp_server/tools/employee_db.py a

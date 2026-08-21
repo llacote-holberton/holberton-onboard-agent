@@ -99,6 +99,38 @@ critique, section debug prints. Plus nécessaires maintenant que les
 étapes 1 à 3 sont validées par les tests unitaires ET testées en
 conditions réelles ; à retirer d'un coup plutôt que de les laisser
 traîner "temporairement" indéfiniment.
+
+RÉACTIVATION 2026-08-20 (Laurent) : les deux print() ci-dessus sont
+remis en place -- régression observée chez Hugo sur la version "tout
+compris" (le modèle répond en texte libre dès le premier tour au lieu
+d'appeler les tools, symptôme identique à celui décrit plus haut pour
+CORRECTIF #2/étape 2, avec un prompt formulé "plan complet" qui est déjà
+identifié comme un déclencheur connu). Objectif : confirmer via les logs
+si c'est bien ce cas de figure (0 tool_calls dès le tour 1) avant
+d'investiguer plus loin (version du modèle, taille du prompt système,
+régression Ollama...). À retirer de nouveau une fois la cause confirmée
+et corrigée -- ne pas laisser traîner indéfiniment, même remarque
+qu'à l'étape 4.
+
+NARRATION SANS TOOL_CALL (2026-08-20, Laurent) : les logs réactivés
+ci-dessus ont confirmé le diagnostic -- au tour 1, le modèle NARRE son
+plan en prose ("Voici les actions pertinentes que je propose : 1. ...
+Je vais maintenant proposer les outils correspondants pour chaque
+action.") sans jamais appeler le moindre tool. Le system prompt promet
+pourtant explicitement une relance ("tu peux les proposer une par une,
+on te redemandera s'il en manque") -- mais avant ce correctif, cette
+promesse n'était honorée par le code QUE si le modèle avait déjà appelé
+au moins un tool (la relance ciblée existante est conditionnée à
+`action_calls` non vide). Le cas "zéro tool_call dès le tout premier
+tour" tombait directement dans la branche de conclusion, sans jamais
+laisser au modèle la chance qu'on lui avait pourtant annoncée.
+Correctif : `_FIRST_TURN_NARRATION_NUDGE`, une relance UNIQUE réservée
+au tour 0 (voir `narration_retry_used` dans build_plan) -- si le modèle
+narre encore sans appeler d'outil au tour suivant, on conclut
+normalement (ce n'est alors plus une narration mais un vrai refus/
+absence d'action pertinente, ex: demande hors-sujet). Coût : un aller-
+retour Ollama supplémentaire pour CE cas précis seulement (budget
+_MAX_TURNS=8 toujours largement suffisant).
 """
 
 import json
@@ -170,6 +202,18 @@ _NUDGE = (
     "demande ? Si oui, appelle le ou les outils correspondants "
     "maintenant. Si non, ou si tu as déjà tout proposé, réponds "
     "uniquement par le mot \"Terminé\", sans appeler aucun outil."
+)
+
+# RECONCILIATION 2026-08-20 (Laurent) -- voir docstring de module, section
+# "narration sans tool_call". Relance UNIQUE, réservée au tout premier tour
+# de build_plan(), quand le modèle décrit son plan en texte au lieu
+# d'appeler les tools correspondants.
+_FIRST_TURN_NARRATION_NUDGE = (
+    "Tu as décrit un plan mais tu n'as appelé aucun outil. Appelle "
+    "maintenant, un par un, les outils correspondant à chaque action que "
+    "tu viens de lister. Si en réalité aucune action n'est pertinente pour "
+    "cette demande, réponds uniquement par le mot \"Terminé\", sans "
+    "appeler aucun outil."
 )
 
 _BASE_SYSTEM_PROMPT = (
@@ -445,6 +489,11 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     collected_action_calls: list[dict] = []
     final_text: str | None = None
     concluded = False  # True dès que le modèle répond sans tool_calls (fin normale)
+    # RECONCILIATION 2026-08-20 (Laurent) -- voir docstring de module,
+    # section "narration sans tool_call" : garde-fou pour n'accorder
+    # qu'UNE seule relance de ce type, jamais plus (évite de transformer
+    # un vrai refus hors-sujet en boucle qui consomme tout _MAX_TURNS).
+    narration_retry_used = False
 
     mcp_client_cm = None
     mcp_client = None
@@ -472,6 +521,45 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                     # Réponse finale en texte -- soit rien à proposer du
                     # tout (premier tour), soit "Terminé" après relance.
                     final_text = assistant_message.get("content")
+                    # DEBUG (réactivé 2026-08-20, Laurent -- voir docstring
+                    # de module) : le modèle a décroché du format tool_calls
+                    # structuré et répondu en texte libre. Repro observée
+                    # chez Hugo -- utile pour confirmer si c'est ce cas de
+                    # figure précis (vs un plan simplement vide) avant
+                    # d'aller chercher plus loin côté prompt/modèle/Ollama.
+                    print(
+                        f"[planner debug] tour {turn + 1}/{_MAX_TURNS} : "
+                        f"aucun tool_call, réponse texte libre = {final_text!r}"
+                    )
+
+                    # RECONCILIATION 2026-08-20 (Laurent) -- voir docstring
+                    # de module, section "narration sans tool_call" : repro
+                    # confirmée par les logs (session de debug avec Hugo) --
+                    # sur un tour 1 sans aucun tool_call, le modèle NARRE
+                    # son plan en prose ("Voici les actions... Je vais
+                    # maintenant proposer les outils correspondants") sans
+                    # jamais réellement les appeler. Le system prompt lui
+                    # promet pourtant explicitement une relance ("on te
+                    # redemandera s'il en manque") -- mais cette promesse
+                    # n'était honorée par le code que si le modèle avait
+                    # DÉJÀ appelé au moins un tool (voir la relance ciblée
+                    # plus bas, conditionnée à `action_calls`). On donne
+                    # donc ici une relance UNIQUE, seulement au tout premier
+                    # tour, avant de conclure -- un vrai refus hors-sujet
+                    # répétera simplement un texte similaire au tour
+                    # suivant et concluera normalement (coût : un aller-
+                    # retour Ollama de plus pour ce cas précis, budget
+                    # _MAX_TURNS toujours largement suffisant).
+                    if turn == 0 and not narration_retry_used:
+                        narration_retry_used = True
+                        messages.append(assistant_message)
+                        messages.append({"role": "user", "content": _FIRST_TURN_NARRATION_NUDGE})
+                        print(
+                            f"[planner debug] tour {turn + 1}/{_MAX_TURNS} : "
+                            "narration sans tool_call au premier tour -- relance unique déclenchée"
+                        )
+                        continue
+
                     concluded = True
                     break
 
@@ -483,6 +571,14 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 action_calls = [
                     c for c in tool_calls if c["function"]["name"] not in _EXPLORATORY_TOOLS
                 ]
+                # DEBUG (réactivé 2026-08-20, Laurent) : tools appelés ce
+                # tour, pour suivre le déroulé complet de la boucle
+                # multi-tours en conditions réelles.
+                print(
+                    f"[planner debug] tour {turn + 1}/{_MAX_TURNS} : "
+                    f"actions=[{', '.join(c['function']['name'] for c in action_calls)}] "
+                    f"exploration=[{', '.join(c['function']['name'] for c in exploratory_calls)}]"
+                )
 
                 # Exploration : exécutée réellement (lecture seule, sans
                 # risque), résultat renvoyé pour enrichir le contexte.
