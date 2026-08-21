@@ -1,0 +1,585 @@
+From 5020903f37e0d39bae4cbe1b6f195110679d57f1 Mon Sep 17 00:00:00 2001
+From: Claude <claude@example.com>
+Date: Fri, 21 Aug 2026 12:59:51 +0000
+Subject: [PATCH] Port test coverage from dev_laurent for code shared as-is
+ with this branch
+
+Feature/palier3 currently has zero automated tests for mcp_server/tools/
+and is missing two backend/app/tests/ files (test_models.py,
+test_audit_api.py) that dev_laurent added later. This ports every test
+that exercises code confirmed byte-identical (or near-identical) between
+the two branches, verified with `git diff` against dev_laurent before
+porting anything -- nothing here was ported blind.
+
+Added, unmodified (dependencies confirmed zero-diff against dev_laurent):
+- backend/app/tests/test_models.py
+- backend/app/tests/test_audit_api.py
+
+Added, adapted with clearly-documented minor changes (see each file's
+module docstring for exactly what was dropped and why):
+- mcp_server/tests/test_mailbox.py (channel has no default here -- passed
+  explicitly; the start_date-absorption tests were dropped, that param
+  doesn't exist on this branch)
+- mcp_server/tests/test_event_calendar.py (CALENDAR_DIR -> _CALENDAR_DIR;
+  the two plan_id-subfolder tests dropped, that feature doesn't exist here)
+- mcp_server/tests/test_documents.py (DOCUMENTS_DIR -> _DOCUMENTS_DIR;
+  the three plan_id-subfolder tests dropped, same reason)
+- mcp_server/tests/conftest.py, mcp_server/pytest.ini,
+  mcp_server/requirements-dev.txt (test scaffolding, unmodified --
+  needed for the three files above to run at all)
+
+All three mcp_server test files were actually run (not just compiled)
+against this branch's REAL tools/*.py, via a harness importing them
+directly with a fastmcp shim (mcp-server's only currently un-pip-
+installable dependency in this sandbox) and the real jinja2/httpx/pydantic
+-- 21/21 passing.
+
+Explicitly NOT ported (see delivery notes for the full reasoning) because
+the underlying code differs too much for an "as-is or minor tweak" port:
+mcp_server/tests/test_employee_db.py (SQLite vs this branch's JSON-file
+storage, different validation philosophy), mcp_server/tests/
+test_tracker.py (100% about a compensation function this branch doesn't
+have), backend/app/tests/test_actions_api_download.py,
+test_mcp_client.py, test_plans_api_plan_id_injection.py (each tests a
+feature -- file download, per-tool undo dispatch, plan_id injection --
+absent from this branch), scripts/test_employee_db_tool.py,
+scripts/test_undo_tool.py (manual scripts for the same missing
+features), and every agent/tests/ file (planner.py/main.py are a
+fundamentally different design here: raw Ollama HTTP calls vs
+dev_laurent's LiteLLM-agnostic + DURCISSEMENT error-handling layer).
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ backend/app/tests/test_audit_api.py     |  83 ++++++++++++++++
+ backend/app/tests/test_models.py        |  34 +++++++
+ mcp_server/pytest.ini                   |   2 +
+ mcp_server/requirements-dev.txt         |   5 +
+ mcp_server/tests/conftest.py            |  17 ++++
+ mcp_server/tests/test_documents.py      |  84 ++++++++++++++++
+ mcp_server/tests/test_event_calendar.py | 118 +++++++++++++++++++++++
+ mcp_server/tests/test_mailbox.py        | 121 ++++++++++++++++++++++++
+ 8 files changed, 464 insertions(+)
+ create mode 100644 backend/app/tests/test_audit_api.py
+ create mode 100644 backend/app/tests/test_models.py
+ create mode 100644 mcp_server/pytest.ini
+ create mode 100644 mcp_server/requirements-dev.txt
+ create mode 100644 mcp_server/tests/conftest.py
+ create mode 100644 mcp_server/tests/test_documents.py
+ create mode 100644 mcp_server/tests/test_event_calendar.py
+ create mode 100644 mcp_server/tests/test_mailbox.py
+
+diff --git a/backend/app/tests/test_audit_api.py b/backend/app/tests/test_audit_api.py
+new file mode 100644
+index 0000000..90c5e9c
+--- /dev/null
++++ b/backend/app/tests/test_audit_api.py
+@@ -0,0 +1,83 @@
++"""
++Tests for GET /audit, notamment le nouveau filtre `plan_id` (voir
++routers/audit.py) demande pour avoir la trace complete d'un plan en un seul
++appel -- avant ca, il fallait faire un /audit?action_id=... par action, en
++etant deja passe par GET /plans/{id} pour connaitre ces action_id.
++"""
++
++from unittest.mock import AsyncMock
++
++from app.models import Action, Plan
++
++
++def test_audit_filtered_by_plan_id_returns_only_that_plans_entries_in_order(client, db_session, monkeypatch):
++    """Deux plans distincts, chacun avec une action -- /audit?plan_id=X ne
++    doit renvoyer QUE les lignes de X, triees chronologiquement (proposed
++    avant executed), et chaque ligne doit porter le nom du tool (voir
++    AuditLog.tool dans models.py -- sans ca, debugger une sequence a la main
++    comme on vient de le faire est illisible)."""
++    monkeypatch.setattr(
++        "app.services.agent_client.plan",
++        AsyncMock(
++            return_value={
++                "actions": [
++                    {
++                        "tool": "send_welcome_message",
++                        "params": {"employee_name": "Camille", "team": "Backend", "channel": "team"},
++                        "summary": "Envoyer le mail de bienvenue",
++                    }
++                ],
++                "excluded_actions": [],
++                "clarification": None,
++            }
++        ),
++    )
++
++    # Plan A -- celui qu'on veut retrouver isole via le filtre.
++    response_a = client.post("/plans", json={"prompt": "onboard Camille"})
++    plan_a_id = response_a.json()["id"]
++    action_a_id = response_a.json()["actions"][0]["id"]
++
++    # Plan B -- doit rester invisible dans le resultat filtre sur Plan A.
++    response_b = client.post("/plans", json={"prompt": "onboard un autre"})
++    plan_b_id = response_b.json()["id"]
++    assert plan_b_id != plan_a_id
++
++    # Fait avancer Plan A jusqu'a "executed" pour avoir 2 lignes distinctes
++    # (proposed, puis executed) a verifier dans l'ordre chronologique.
++    client.patch(f"/actions/{action_a_id}", json={"status": "approved"})
++    monkeypatch.setattr(
++        "app.services.agent_client.execute",
++        AsyncMock(return_value=[{"action_id": action_a_id, "status": "executed", "result": "<msg-id@example>"}]),
++    )
++    client.post(f"/plans/{plan_a_id}/execute")
++
++    response = client.get(f"/audit?plan_id={plan_a_id}")
++
++    assert response.status_code == 200
++    entries = response.json()
++
++    assert all(entry["action_id"] == action_a_id for entry in entries)  # rien du plan B
++    assert [entry["status"] for entry in entries] == ["proposed", "approved", "executed"]  # ordre chronologique
++    assert all(entry["tool"] == "send_welcome_message" for entry in entries)
++
++
++def test_audit_without_filters_still_returns_everything_newest_first(client, db_session, monkeypatch):
++    """Non-regression : le comportement par defaut de /audit (sans filtre)
++    ne doit pas changer -- toujours desc/plus-recent-d'abord, comme avant
++    l'ajout du filtre plan_id."""
++    plan = Plan(prompt="onboard Jane Doe")
++    action = Action(
++        tool="create_onboarding_issue",
++        params={"employee_name": "Jane Doe"},
++        summary="Create the onboarding issue",
++        idempotency_key="key-1",
++        status="proposed",
++    )
++    plan.actions.append(action)
++    db_session.add(plan)
++    db_session.commit()
++
++    response = client.get("/audit")
++
++    assert response.status_code == 200
+diff --git a/backend/app/tests/test_models.py b/backend/app/tests/test_models.py
+new file mode 100644
+index 0000000..9f24099
+--- /dev/null
++++ b/backend/app/tests/test_models.py
+@@ -0,0 +1,34 @@
++"""
++Model-level tests -- kept separate from test_plans_api.py (which exercises
++the HTTP endpoints with agent_client mocked) because this one is purely
++about SQLAlchemy relationship/property behavior, no FastAPI client needed.
++"""
++
++from app.models import Action, AuditLog, Plan
++
++
++def test_audit_log_tool_property_reads_through_the_action_relationship(db_session):
++    """Regression guard for the "audit log doesn't say which tool" gap
++    Laurent hit while debugging: GET /audit used to return action_id/status/
++    note/timestamp with no way to tell which tool a line was about, short of
++    cross-referencing GET /plans/{id}. AuditLog.tool is a derived property
++    (not a duplicated column) so this locks in that it actually resolves
++    through the `action` relationship instead of raising or returning None."""
++    plan = Plan(prompt="onboard Jane Doe")
++    action = Action(
++        tool="create_onboarding_issue",
++        params={"employee_name": "Jane Doe"},
++        summary="Create the onboarding issue",
++        idempotency_key="key-1",
++        status="error",
++    )
++    plan.actions.append(action)
++    db_session.add(plan)
++    db_session.commit()
++
++    audit_entry = AuditLog(action_id=action.id, status="error", note="missing_argument: checklist")
++    db_session.add(audit_entry)
++    db_session.commit()
++    db_session.refresh(audit_entry)
++
++    assert audit_entry.tool == "create_onboarding_issue"
+diff --git a/mcp_server/pytest.ini b/mcp_server/pytest.ini
+new file mode 100644
+index 0000000..5ee6477
+--- /dev/null
++++ b/mcp_server/pytest.ini
+@@ -0,0 +1,2 @@
++[pytest]
++testpaths = tests
+diff --git a/mcp_server/requirements-dev.txt b/mcp_server/requirements-dev.txt
+new file mode 100644
+index 0000000..e01fe69
+--- /dev/null
++++ b/mcp_server/requirements-dev.txt
+@@ -0,0 +1,5 @@
++# Dev-only dependencies (tests). Not installed in the runtime image --
++# Dockerfile only installs requirements.txt, to keep it lean. Mirrors
++# backend/requirements-dev.txt.
++-r requirements.txt
++pytest>=8.0
+diff --git a/mcp_server/tests/conftest.py b/mcp_server/tests/conftest.py
+new file mode 100644
+index 0000000..569cfe9
+--- /dev/null
++++ b/mcp_server/tests/conftest.py
+@@ -0,0 +1,17 @@
++"""
++mcp_server has no test scaffolding yet (unlike backend/app/tests/, which
++already has its own conftest.py + pytest.ini) -- this is the first one.
++
++server.py and every module under tools/ do bare imports ("from mcp_instance
++import mcp", "from domain_types import ..."), which only resolve when
++mcp_server/ itself (not mcp_server/tests/) is on sys.path -- true at
++runtime because Docker's WORKDIR/CMD run `python server.py` from inside
++mcp_server/, which puts that directory on sys.path[0] automatically. Pytest
++has no equivalent behavior, so this conftest adds mcp_server/ to sys.path
++explicitly, once, for the whole test session.
++"""
++
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+diff --git a/mcp_server/tests/test_documents.py b/mcp_server/tests/test_documents.py
+new file mode 100644
+index 0000000..61d6a64
+--- /dev/null
++++ b/mcp_server/tests/test_documents.py
+@@ -0,0 +1,84 @@
++"""
++Unit tests for documents.py's generate_handbook. Writes a real HTML file
++to disk (no network side effect to mock, unlike mailbox.py), so these
++tests use tmp_path to redirect the documents directory without touching
++the real data/ directory of the project.
++
++PORTED (2026-08-21, Laurent) from dev_laurent's mcp_server/tests/
++test_documents.py -- confirmed via `git diff` that this branch's
++generate_handbook has the exact same core logic (template rendering,
++unknown-template rejection) as dev_laurent's, which was itself originally
++reused from this branch. Two adaptations were needed, not zero:
++  1. The module-level directory constant is named `DOCUMENTS_DIR` on
++     dev_laurent but `_DOCUMENTS_DIR` (private) here -- every reference
++     below uses the name this branch actually has.
++  2. The `plan_id` parameter (and its dedicated subfolder-per-plan
++     behavior) doesn't exist on this branch's generate_handbook at all --
++     the three dev_laurent tests exercising it
++     (with_plan_id_writes_under_a_subfolder, two_plans_do_not_collide,
++     plan_id_path_traversal_rejected) were dropped rather than adapted,
++     since there's no equivalent behavior here to test. The "without
++     plan_id" case is kept as-is below since it only asserts the
++     (unchanged) default flat-storage behavior.
++"""
++
++from pathlib import Path
++
++import pytest
++
++from tools import documents
++
++
++@pytest.fixture(autouse=True)
++def _isolated_data_dir(tmp_path, monkeypatch):
++    """Redirige _DOCUMENTS_DIR vers un répertoire jetable pour chaque test
++    -- lu au niveau module, donc on monkeypatch directement l'attribut
++    plutôt que la variable d'environnement (qui ne serait relue qu'à un
++    rechargement du module)."""
++    monkeypatch.setattr(documents, "_DOCUMENTS_DIR", tmp_path / "documents")
++
++
++def _call(**kwargs):
++    fn = documents.generate_handbook
++    return (fn.fn if hasattr(fn, "fn") else fn)(**kwargs)
++
++
++def test_generate_handbook_welcome_pack_writes_html_containing_employee_id():
++    path = _call(employee_id="emp-123", template="welcome_pack")
++
++    content = open(path, encoding="utf-8").read()
++    assert "emp-123" in content
++    assert "<html" in content
++
++
++def test_generate_handbook_mission_letter_uses_the_other_template():
++    path = _call(employee_id="emp-456", template="mission_letter")
++
++    content = open(path, encoding="utf-8").read()
++    assert "emp-456" in content
++    assert "Lettre de mission" in content
++
++
++def test_generate_handbook_returns_a_path_string_under_documents_dir():
++    path = _call(employee_id="emp-789", template="welcome_pack")
++
++    assert isinstance(path, str)
++    assert "documents" in path
++    assert path.endswith(".html")
++
++
++def test_generate_handbook_unknown_template_raises_value_error():
++    """Garde-fou pour un cas normalement impossible via le LLM (le schéma
++    JSON restreint `template` au Literal déclaré), mais atteignable par un
++    appel direct (ex: /execute contourné, script de test) -- ne doit
++    jamais planter silencieusement ou écrire un fichier vide."""
++    with pytest.raises(ValueError, match="Gabarit inconnu"):
++        _call(employee_id="emp-000", template="does_not_exist")
++
++
++def test_generate_handbook_writes_flat_under_documents_dir():
++    """Only remaining case from dev_laurent's plan_id group -- this branch
++    has no plan_id subfolder feature at all, so storage is always flat."""
++    path = _call(employee_id="emp-111", template="welcome_pack")
++
++    assert Path(path).parent == documents._DOCUMENTS_DIR
+diff --git a/mcp_server/tests/test_event_calendar.py b/mcp_server/tests/test_event_calendar.py
+new file mode 100644
+index 0000000..13472dc
+--- /dev/null
++++ b/mcp_server/tests/test_event_calendar.py
+@@ -0,0 +1,118 @@
++"""
++Unit tests for event_calendar.py's create_calendar_event. Writes a real
++.ics file to disk, so these tests use tmp_path to redirect the calendar
++directory without touching the real data/ directory of the project.
++
++PORTED (2026-08-21, Laurent) from dev_laurent's mcp_server/tests/
++test_event_calendar.py -- confirmed via `git diff` that this branch's
++create_calendar_event has the exact same core logic (ICS generation,
++default start hour, attendee handling, date/duration validation) as
++dev_laurent's, which was itself originally reused from this branch. Two
++adaptations were needed, not zero:
++  1. The module-level directory constant is named `CALENDAR_DIR` on
++     dev_laurent but `_CALENDAR_DIR` (private) here -- every reference
++     below uses the name this branch actually has.
++  2. The `plan_id` parameter (and its dedicated subfolder-per-plan
++     behavior) doesn't exist on this branch's create_calendar_event at
++     all -- the two dev_laurent tests exercising it
++     (with_plan_id_writes_under_a_subfolder,
++     plan_id_path_traversal_rejected) were dropped rather than adapted,
++     since there's no equivalent behavior here to test. The "without
++     plan_id" case is kept as-is below since it only asserts the
++     (unchanged) default flat-storage behavior.
++"""
++
++from pathlib import Path
++
++import pytest
++
++from tools import event_calendar
++
++
++@pytest.fixture(autouse=True)
++def _isolated_data_dir(tmp_path, monkeypatch):
++    monkeypatch.setattr(event_calendar, "_CALENDAR_DIR", tmp_path / "calendar")
++
++
++def _call(**kwargs):
++    fn = event_calendar.create_calendar_event
++    return (fn.fn if hasattr(fn, "fn") else fn)(**kwargs)
++
++
++def _read_raw(path):
++    """`newline=""` disables Python's universal-newline translation on
++    read -- without it, a plain `open(path).read()` silently converts the
++    file's real \\r\\n (CRLF, required for RFC 5545 interoperability) back
++    to \\n, which would make the CRLF assertion below pass or fail for the
++    wrong reason regardless of what create_calendar_event actually wrote
++    to disk."""
++    with open(path, encoding="utf-8", newline="") as f:
++        return f.read()
++
++
++def test_create_calendar_event_writes_a_valid_ics_file():
++    path = _call(
++        title="Présentation de Léa à l'équipe",
++        event_date="2026-08-25",
++        duration_minutes=30,
++        attendees=["Léa Martin"],
++    )
++
++    content = _read_raw(path)
++    assert content.startswith("BEGIN:VCALENDAR\r\n")
++    assert content.rstrip().endswith("END:VCALENDAR")
++    assert "SUMMARY:Présentation de Léa à l'équipe" in content
++    assert "DTSTART:20260825T090000" in content
++    assert "DTEND:20260825T093000" in content
++
++
++def test_create_calendar_event_default_start_hour_is_nine_am():
++    path = _call(title="x", event_date="2026-01-01", duration_minutes=15, attendees=[])
++    content = open(path, encoding="utf-8").read()
++    assert "DTSTART:20260101T090000" in content
++
++
++def test_create_calendar_event_attendee_with_at_sign_used_as_is():
++    path = _call(
++        title="x", event_date="2026-08-25", duration_minutes=30,
++        attendees=["manager@entreprise.com"],
++    )
++    content = open(path, encoding="utf-8").read()
++    assert "ATTENDEE;CN=manager@entreprise.com:mailto:manager@entreprise.com" in content
++
++
++def test_create_calendar_event_attendee_without_at_sign_gets_a_generated_email():
++    path = _call(
++        title="x", event_date="2026-08-25", duration_minutes=30,
++        attendees=["Léa Martin"],
++    )
++    content = open(path, encoding="utf-8").read()
++    assert "ATTENDEE;CN=Léa Martin:mailto:léa.martin@holberton.example" in content
++
++
++def test_create_calendar_event_invalid_date_raises_value_error():
++    """Repro possible si le LLM fournit une date relative non résolue
++    (ex: "lundi prochain" tel quel) -- ce tool n'accepte QUE l'ISO,
++    contrairement à tracker.py::_resolve_start_date qui, lui, sait
++    interpréter ces formulations. Ne doit jamais planter avec une
++    exception Pydantic générique et peu lisible."""
++    with pytest.raises(ValueError, match="non reconnue"):
++        _call(title="x", event_date="lundi prochain", duration_minutes=30, attendees=[])
++
++
++def test_create_calendar_event_non_positive_duration_raises_value_error():
++    with pytest.raises(ValueError, match="positive"):
++        _call(title="x", event_date="2026-08-25", duration_minutes=0, attendees=[])
++
++
++def test_create_calendar_event_negative_duration_raises_value_error():
++    with pytest.raises(ValueError, match="positive"):
++        _call(title="x", event_date="2026-08-25", duration_minutes=-10, attendees=[])
++
++
++def test_create_calendar_event_writes_flat_under_calendar_dir():
++    """Only remaining case from dev_laurent's plan_id group -- this branch
++    has no plan_id subfolder feature at all, so storage is always flat."""
++    path = _call(title="x", event_date="2026-08-25", duration_minutes=30, attendees=[])
++
++    assert Path(path).parent == event_calendar._CALENDAR_DIR
+diff --git a/mcp_server/tests/test_mailbox.py b/mcp_server/tests/test_mailbox.py
+new file mode 100644
+index 0000000..fed2f74
+--- /dev/null
++++ b/mcp_server/tests/test_mailbox.py
+@@ -0,0 +1,121 @@
++"""
++Unit tests for mailbox.py -- _resolve_recipients (pure, reads the real
++fixture directory) and send_welcome_message's team/channel routing. SMTP
++itself is mocked (monkeypatching mailbox.smtplib.SMTP) so no real MailHog
++connection is needed.
++
++PORTED (2026-08-21, Laurent) from dev_laurent's mcp_server/tests/
++test_mailbox.py -- Feature/palier3's mailbox.py implements the exact same
++_resolve_recipients()/send_welcome_message() core logic (byte-identical
++function bodies, confirmed via `git diff`), so those tests port as-is.
++Three groups of tests from the original file were dropped, not adapted,
++because they exercise behavior this branch's send_welcome_message simply
++doesn't have:
++  - `channel` has NO default here (it's a required positional arg on this
++    branch, unlike dev_laurent's `= "team"` default added later) -- every
++    call below passes `channel=` explicitly instead of relying on a
++    default.
++  - `start_date` doesn't exist as a parameter at all on this branch (it
++    was added on dev_laurent specifically to absorb a hallucinated LLM
++    field) -- calling with `start_date=...` here would raise TypeError,
++    so those tests were left out rather than force-adapted.
++"""
++
++from tools import mailbox
++
++
++# --- _resolve_recipients (pure function, real fixture file) --------------
++
++
++def test_resolve_recipients_team_channel_returns_all_members():
++    recipients = mailbox._resolve_recipients("Backend", "team")
++    assert set(recipients) == {
++        "sofia.martins@holberton.example",
++        "karim.haddad@holberton.example",
++        "lea.fontaine@holberton.example",
++    }
++
++
++def test_resolve_recipients_manager_channel_returns_manager_only():
++    recipients = mailbox._resolve_recipients("Backend", "manager")
++    assert recipients == ["sofia.martins@holberton.example"]
++
++
++def test_resolve_recipients_it_channel_ignores_team():
++    recipients = mailbox._resolve_recipients("this-team-does-not-exist", "it")
++    assert recipients == ["it-support@holberton.example"]
++
++
++def test_resolve_recipients_unknown_department_raises():
++    import pytest
++
++    with pytest.raises(ValueError):
++        mailbox._resolve_recipients("Inconnu", "team")
++
++
++# --- send_welcome_message: team/channel routing ---------------------------
++
++
++class _FakeSMTP:
++    """Stand-in for smtplib.SMTP -- records the one sendmail() call instead
++    of opening a real connection to MailHog."""
++
++    def __init__(self, host, port, timeout=None):
++        self.host = host
++        self.port = port
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *exc_info):
++        return False
++
++    def sendmail(self, sender, recipients, message):
++        self.__class__.last_call = {"sender": sender, "recipients": recipients, "message": message}
++
++
++def test_send_welcome_message_team_channel_sends_to_all_members(monkeypatch):
++    """Adapted from dev_laurent's "defaults_channel_to_team_when_omitted"
++    -- channel has no default on this branch, so it's passed explicitly
++    instead of relying on one."""
++    monkeypatch.setattr(mailbox, "smtplib", mailbox.smtplib)
++    monkeypatch.setattr(mailbox.smtplib, "SMTP", _FakeSMTP)
++
++    message_id = mailbox.send_welcome_message(employee_name="Camille", team="Backend", channel="team")
++
++    assert isinstance(message_id, str) and message_id
++    assert set(_FakeSMTP.last_call["recipients"]) == {
++        "sofia.martins@holberton.example",
++        "karim.haddad@holberton.example",
++        "lea.fontaine@holberton.example",
++    }
++
++
++def test_send_welcome_message_channel_manager_routes_to_manager_only(monkeypatch):
++    monkeypatch.setattr(mailbox.smtplib, "SMTP", _FakeSMTP)
++
++    mailbox.send_welcome_message(employee_name="Camille", team="Backend", channel="manager")
++
++    assert _FakeSMTP.last_call["recipients"] == ["sofia.martins@holberton.example"]
++
++
++def test_send_welcome_message_still_raises_for_an_unknown_team(monkeypatch):
++    """An unknown `team` must keep failing loudly (see mailbox.py's own
++    module docstring: never invent a recipient address)."""
++    import pytest
++
++    monkeypatch.setattr(mailbox.smtplib, "SMTP", _FakeSMTP)
++
++    with pytest.raises(ValueError):
++        mailbox.send_welcome_message(employee_name="Camille", team="Inconnu", channel="team")
++
++
++def test_send_welcome_message_has_no_kwargs_parameter():
++    """Regression guard: a **kwargs-style parameter on an @mcp.tool
++    function is fatal to the whole mcp-server process at import time (see
++    fastmcp's from_function() validation), not just to this one tool."""
++    import inspect
++
++    sig = inspect.signature(mailbox.send_welcome_message)
++    kinds = {p.kind for p in sig.parameters.values()}
++    assert inspect.Parameter.VAR_KEYWORD not in kinds
+-- 
+2.43.0
+

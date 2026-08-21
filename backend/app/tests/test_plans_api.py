@@ -39,13 +39,18 @@ def test_create_plan_persists_proposed_actions(client, db_session, monkeypatch):
     monkeypatch.setattr(
         "app.services.agent_client.plan",
         AsyncMock(
-            return_value=[
-                {
-                    "tool": "create_onboarding_issue",
-                    "params": {"employee": "Jane Doe"},
-                    "summary": "Create the onboarding issue for Jane Doe",
-                }
-            ]
+            return_value={
+                "actions": [
+                    {
+                        "tool": "create_onboarding_issue",
+                        "params": {"employee": "Jane Doe"},
+                        "summary": "Create the onboarding issue for Jane Doe",
+                    }
+                ],
+                "excluded_actions": [],
+                "clarification": None,
+                "trace": [],
+            }
         ),
     )
 
