@@ -309,6 +309,15 @@ from datetime import date
 
 logger = logging.getLogger("planner")
 
+
+class McpUnavailableError(Exception):
+    """Le serveur MCP n'a pas pu être contacté (réseau coupé, conteneur
+    arrêté...) -- distingué explicitement d'une erreur LiteLLM/fournisseur
+    LLM pour que agent/main.py puisse afficher un message qui nomme le bon
+    composant en panne, au lieu de "le fournisseur LLM est injoignable"
+    (faux : c'est mcp-server qui l'est, pas le LLM -- voir _describe_llm_error
+    dans agent/main.py, qui ne reconnaît que des exceptions litellm.*)."""
+
 # --- LLM CONFIGURATION -- AGNOSTIQUE (2026-08-21, reconstruit le même ---
 # jour après retour de Laurent) : la première version de cette section
 # codait en dur un switch à deux branches (LLM_PROVIDER=anthropic|ollama,
@@ -633,10 +642,32 @@ def _to_llm_tool(t) -> dict:
 async def _discover_tool_permissions() -> tuple[list, dict]:
     """Retourne (tools_mcp_bruts, permissions), permissions étant le
     contenu de la resource "config://allowed-tools" (allowed /
-    registered_but_not_allowed / allowed_but_not_registered)."""
-    async with Client(_MCP_ENDPOINT) as mcp_client:
-        tools = await mcp_client.list_tools()
-        resource_result = await mcp_client.read_resource("config://allowed-tools")
+    registered_but_not_allowed / allowed_but_not_registered).
+
+    C'est le tout premier appel réseau de build_plan() (avant le moindre
+    appel LLM) -- si mcp-server est down, on la retraduit en
+    McpUnavailableError plutôt que de la laisser remonter telle quelle :
+    sans ça, agent/main.py::_describe_llm_error (qui ne sait reconnaître
+    que des exceptions litellm.*) la classerait à tort comme "le
+    fournisseur LLM est injoignable".
+
+    CORRECTIF (vérifié en conditions réelles, mcp-server arrêté) : fastmcp
+    ne laisse PAS filer l'exception réseau d'origine (httpx.ConnectError
+    et consorts) -- son Client.__aenter__ l'enveloppe systématiquement
+    dans un `RuntimeError("Client failed to connect: ...")` (voir
+    fastmcp/client/client.py), sauf pour httpx.HTTPStatusError/McpError
+    qu'il laisse passer tels quels. Un except httpx.RequestError ciblé
+    ne matchait donc JAMAIS en pratique -- capture large de tout ce qui
+    peut sortir de ce bloc `async with Client(...)`, qui ne fait rien
+    d'autre que parler à mcp-server : n'importe quelle exception ici
+    signifie par construction "impossible d'obtenir ce qu'il faut de
+    mcp-server", quel que soit son type exact."""
+    try:
+        async with Client(_MCP_ENDPOINT) as mcp_client:
+            tools = await mcp_client.list_tools()
+            resource_result = await mcp_client.read_resource("config://allowed-tools")
+    except Exception as exc:
+        raise McpUnavailableError(str(exc)) from exc
 
     permissions = json.loads(resource_result[0].text)
 

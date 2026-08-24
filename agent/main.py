@@ -47,10 +47,14 @@ def _describe_llm_error(exc: Exception) -> tuple[int, str]:
     exc_name = type(exc).__name__
 
     if isinstance(exc, getattr(litellm, "AuthenticationError", ())):
+        # Message volontairement simple côté utilisateur (pas de nom de
+        # variable d'environnement ni de ".env" -- jargon d'administrateur,
+        # pas d'utilisateur final) ; le détail technique complet (provider,
+        # variable à vérifier) part dans les logs via logger.exception
+        # ci-dessous, pour qui configure le déploiement.
         return 502, (
-            f"Le fournisseur LLM ({provider}) a refusé la clé API -- "
-            "vérifiez LLM_MODEL_API_KEY (ou la variable spécifique au "
-            "fournisseur, ex: ANTHROPIC_API_KEY) dans votre .env."
+            "La configuration de l'assistant IA est incorrecte (clé "
+            "d'accès refusée) -- contactez l'administrateur."
         )
     if isinstance(exc, getattr(litellm, "RateLimitError", ())):
         return 502, (
@@ -153,6 +157,19 @@ class PlanRequest(BaseModel):
 async def plan(body: PlanRequest):
     try:
         actions, excluded_actions, notice, trace = await planner.build_plan(body.prompt)
+    except planner.McpUnavailableError as exc:
+        # Doit être attrapé AVANT le except Exception générique ci-dessous :
+        # sinon _describe_llm_error (qui ne reconnaît que des exceptions
+        # litellm.*) classerait à tort ce cas comme "fournisseur LLM
+        # injoignable", alors que c'est mcp-server qui l'est -- premier
+        # appel réseau de build_plan(), avant tout appel LLM.
+        detail = (
+            "Le service qui gère les outils (serveur MCP) est actuellement "
+            "injoignable. Réessayez dans quelques instants ; si le problème "
+            "persiste, contactez l'administrateur."
+        )
+        logger.exception("build_plan a échoué : mcp-server injoignable")
+        raise HTTPException(status_code=503, detail=detail) from exc
     except Exception as exc:
         status_code, detail = _describe_llm_error(exc)
         # logger.exception : voir le même correctif sur ping_llm() ci-dessus.
