@@ -56,7 +56,17 @@ def _resolve_recipients(team: str, channel: Literal["team", "manager", "it"]) ->
 
     department = directory.get(department_name)
     if department is None:
-        raise ValueError(f"Unknown department '{department_name}' in employees_directory.json")
+        # CORRECTIF (2026-08-24, Laurent, portage de f55ad6b depuis
+        # feature/palier5) -- message technique brut ("Unknown department
+        # '...' in employees_directory.json") remplacé par un message
+        # humain, actionnable : nom de l'équipe fautive, liste des équipes
+        # valides, confirmation explicite que rien n'a été exécuté. Voir
+        # Cas 4 de l'ancien eval/cases.md sur feature/palier5.
+        raise ValueError(
+            f"Équipe inconnue : '{department_name}'. Équipes valides : "
+            f"{sorted(directory.keys())}. L'action n'a pas été exécutée -- "
+            "vérifiez le nom de l'équipe."
+        )
 
     if channel == "manager":
         return [department["manager_email"]]
