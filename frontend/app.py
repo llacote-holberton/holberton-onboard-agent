@@ -265,7 +265,19 @@ if plan:
                     results = execution.json()
 
                     executed_count = sum(1 for r in results if r["status"] == "executed")
+                    failed_count = len(results) - executed_count
                     st.success(f"{executed_count} action(s) exécutée(s) sur {len(results)}.")
+                    if failed_count:
+                        # CORRECTIF : un échec partiel (tool non autorisé,
+                        # erreur métier d'un tool, ...) était auparavant
+                        # invisible tant qu'on n'ouvrait pas "Traçabilité de
+                        # ce plan" -- le seul retour visible était le
+                        # st.success ci-dessus, silencieux sur les échecs.
+                        st.warning(
+                            f"⚠️ {failed_count} action(s) n'ont pas pu être "
+                            "exécutée(s) -- voir « Traçabilité de ce plan » "
+                            "ci-dessous pour le détail de chaque échec."
+                        )
                     st.session_state.trace = fetch_audit_trace(plan["id"])
 
                     # BUG FIX 2026-08-20 (Laurent) -- st.session_state.plan
