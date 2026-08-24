@@ -19,8 +19,6 @@ Holberton Onboarding Agent turns a short natural-language description of a new h
     - [Step 0: Retrieving project files](#step-0-retrieving-project-files)
     - [Step 1: Environment Configuration (one-shot)](#step-1-environment-configuration-one-shot)
       - [WARNING about CRITICAL CONFIGURATION VALUES](#warning-about-critical-configuration-values)
-      - [Database Initialization Modes (`INIT_MODE`)](#database-initialization-modes-init_mode)
-    - [Switching Database Seeding Modes (`demo` ↔ `minimal`)](#switching-database-seeding-modes-demo--minimal)
     - [Step 2: Manually managing the application (repeatable)](#step-2-manually-managing-the-application-repeatable)
       - [Starting](#starting)
         - [Automatically](#automatically)
@@ -145,12 +143,14 @@ vim .env
 Open with your favorite GUI text editor and adjusted the required values.
 
 ##### WARNING about CRITICAL CONFIGURATION VALUES
-Before launching the stack, you must update the following placeholder values in your .env file:
-- ALLOWED_TOOLS: comma-separated list of onboarding actions the agent is allowed to actually execute. Any proposed action whose tool isn't listed here is still shown to the user, but struck through and excluded from execution. Available tools: `create_employee_record`, `send_welcome_message`, `create_onboarding_issue`, `generate_handbook`, `create_calendar_event`. Write the exact tool names you want enabled, separated by a single comma (e.g. `ALLOWED_TOOLS=create_employee_record,send_welcome_message`).
-- GITHUB_TOKEN & GITHUB_REPO: required for tool "create_onboarding_issue" (NOTE: for now only Github code server is supported).
+Before launching the stack, you must review/update the following placeholder values in your .env file:
+- ALLOWED_TOOLS: comma-separated list of onboarding actions the agent is allowed to actually execute. Any proposed action whose tool isn't listed here is still shown to the user, but struck through and excluded from execution. Available tools: `create_employee_record`, `send_welcome_message`, `create_onboarding_issue`, `generate_handbook`, `create_calendar_event`. Write the exact tool names you want enabled, separated by a single comma (e.g. `ALLOWED_TOOLS=create_employee_record,send_welcome_message`). **Leaving it empty (the shipped default) means every tool is allowed — this is the most permissive setting, not the safest one**: with the default `.env`, all 5 tools execute on approval, including sending real e-mails through MailHog. Set it explicitly if you want to restrict what the agent can actually execute.
+- GITHUB_TOKEN & GITHUB_REPO: **only required if you want to use the "create_onboarding_issue" tool** (i.e. if you include it in `ALLOWED_TOOLS` above, or just want the model to be able to propose it) — checked lazily, only when that tool actually runs, so the rest of the stack starts and works fine without them. Leave the placeholder as-is if you don't need GitHub ticket creation. (NOTE: for now only GitHub is supported.)
 - LLM_MODEL_NAME: which model plans the actions, `<provider>/<model>` (default `anthropic/claude-sonnet-4-6`) — see [LLM Provider: any provider, any model](#llm-provider-any-provider-any-model) below for the full picture and every supported format.
   - If the provider is remote (e.g. `anthropic/...`, `openai/...`): **LLM_MODEL_API_KEY** is required — see the dedicated section below for where to get one. Without it the agent fails fast with an explicit error on the first plan request, it never silently falls back to a different model.
   - If the provider is `ollama_chat/...` (local — **use this prefix, not `ollama/`**, see the note in [LLM Provider: any provider, any model](#llm-provider-any-provider-any-model) below): no API key needed, but see [Memory management & Performance](#memory-management--performance) before picking a tag — `./start.sh` (recommended, see [Starting](#starting)) detects this case automatically and handles the extra Compose profile + model download for you, no manual steps required.
+
+Every other value in `.env.example` (ports, `LLM_CALL_TIMEOUT_SECONDS`, `MAX_TURNS`, MailHog settings, `DATA_DIR`/`DATA_HOST_DIR`, etc.) already ships with a sensible default — nothing else needs to be touched for a first run. See the comments in `.env.example` itself if you want to tune any of them later.
 
 # Step 2: Manually managing the application (repeatable)
 
