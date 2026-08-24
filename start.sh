@@ -12,6 +12,17 @@
 # que soit le modèle utilisé (voir README.md "Stopping").
 set -euo pipefail
 
+# 0. Vérification préalable : sans .env (fichier volontairement absent du
+#    repo, voir .env.example), le "source .env" ci-dessous échouerait avec
+#    une erreur bash brute et peu claire. On préfère un message explicite.
+if [ ! -f .env ]; then
+  echo "Erreur : fichier .env introuvable à la racine du projet." >&2
+  echo "Copiez d'abord le modèle fourni puis ajustez les valeurs si besoin :" >&2
+  echo "    cp .env.example .env" >&2
+  echo "Voir README.md, section 'Step 1: Environment Configuration' pour le détail." >&2
+  exit 1
+fi
+
 # 1. Lecture et exposition des variables d'environnement custom à Docker.
 set -o allexport
 source .env

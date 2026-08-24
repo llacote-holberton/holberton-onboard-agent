@@ -201,9 +201,15 @@ To stop the stack without losing any information, just run this: `./stop.sh` (th
 
 ## Deleting all information (containers AND volume AND business data)
 
-If you want to completely and cleanly uninstall this project (or just restart it from scratch), you can run the following from project root:
--  `docker compose down -v` under the hood targeting all services (the -v option means "Volume deletion" and implies that the persistent storage for local models will be deleted from your machine).
-- `rm -rf ./data/*` will delete the database file (onboarding.db) as well as any files (documents, calendar events...) you could have generated using the app.
+If you want to completely and cleanly uninstall this project (or just restart it from scratch), the recommended one-liner is:
+
+- `./stop.sh --purge`
+
+Under the hood this does two things:
+-  `docker compose down -v` targeting all services (the `-v` option means "Volume deletion" and implies that the persistent storage for local models will be deleted from your machine).
+- removes the contents of the business data directory (`DATA_HOST_DIR` in `.env`, `./data` by default) — this deletes the database file (`onboarding.db`) as well as any files (documents, calendar events...) you could have generated using the app. `docker compose down -v` alone does NOT do this, since `./data` is a bind-mounted host directory, not a Docker volume.
+
+If you'd rather do it manually (or understand exactly what gets removed), the two equivalent steps are `docker compose down -v` and `rm -rf ./data/*`, run from project root.
 
 </details>
 
