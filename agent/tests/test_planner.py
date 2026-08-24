@@ -409,7 +409,14 @@ async def test_build_plan_only_retries_narration_once(monkeypatch):
     assert call_count["n"] == 2  # 1 relance seulement, pas plus
     assert actions == []
     assert excluded_actions == []
-    assert notice == "Toujours pas de tool_call (appel 2)."
+    # CORRECTIF (2026-08-24, Laurent) -- notice préfère désormais le texte
+    # du PREMIER tour ("appel 1"), pas du dernier ("appel 2") : voir
+    # first_turn_text dans build_plan(). Avant ce correctif, un vrai refus
+    # explicite au tour 0 (ex: tentative d'injection de prompt) était
+    # systématiquement écrasé par la réponse du tour de relance, qui se
+    # limite le plus souvent au seul mot "Terminé" (voir
+    # _FIRST_TURN_NARRATION_NUDGE) -- inexploitable pour l'utilisateur.
+    assert notice == "Toujours pas de tool_call (appel 1)."
 
 
 async def test_build_plan_targeted_nudge_lists_remaining_tools(monkeypatch):
