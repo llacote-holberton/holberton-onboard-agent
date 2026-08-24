@@ -43,6 +43,19 @@ _PLAN_GENERATION_TIMEOUT = (
 # a download button, not any correctness-critical behaviour.
 _FILE_GENERATING_TOOLS = {"generate_handbook", "create_calendar_event"}
 
+# Libellés dédiés au bouton de téléchargement -- action['summary'] (voir
+# agent/planner.py::_SUMMARY_TEMPLATES) est rédigé au futur/impératif pour
+# la checklist PRE-exécution ("Générer le document...", "Créer
+# l'événement..."), ce qui n'a plus de sens une fois l'action déjà
+# exécutée : le fichier existe déjà, le bouton ne fait que le télécharger.
+# Même paramètres que _SUMMARY_TEMPLATES (title/template), juste le verbe
+# de corrigé -- dupliqué ici pour la même raison que _FILE_GENERATING_TOOLS
+# juste au-dessus (pas de dépendance au backend pour un simple libellé).
+_DOWNLOAD_LABELS = {
+    "generate_handbook": "Télécharger le document '{template}'",
+    "create_calendar_event": "Télécharger l'événement '{title}'",
+}
+
 
 def describe_error(exc: Exception) -> str:
     """requests' HTTPError.__str__() is just the generic status line
@@ -131,8 +144,17 @@ def render_downloadable_files(actions: list[dict]) -> None:
             disposition = response.headers.get("content-disposition", "")
             if "filename=" in disposition:
                 filename = disposition.split("filename=")[-1].strip('"')
+            label_template = _DOWNLOAD_LABELS.get(action["tool"])
+            try:
+                label = label_template.format(**action["params"]) if label_template else action["summary"]
+            except (KeyError, IndexError):
+                # Paramètre attendu manquant (tool ajouté à _DOWNLOAD_LABELS
+                # sans le bon nom de paramètre, ou schéma modifié côté
+                # mcp-server) -- ne jamais faire planter l'affichage du
+                # bouton pour un simple problème de libellé.
+                label = action["summary"]
             st.download_button(
-                f"⬇️ {action['summary']}",
+                f"⬇️ {label}",
                 data=response.content,
                 file_name=filename or f"{action['id']}.bin",
                 mime=response.headers.get("content-type", "application/octet-stream"),
