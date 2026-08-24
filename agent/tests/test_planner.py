@@ -41,6 +41,18 @@ import pytest
 
 import planner
 
+# CORRECTIF (2026-08-24, Laurent) -- capturée ICI, à l'import du module de
+# test, AVANT que la fixture autouse _bypass_injection_classifier (plus
+# bas) ne remplace planner._classify_prompt_injection par un stub qui
+# renvoie toujours False. Les tests qui portent spécifiquement sur ce
+# classifieur (voir plus bas) restaurent cette référence par-dessus le
+# stub -- sans ça, ils appelleraient le stub de la fixture, jamais la
+# vraie implémentation, quel que soit le mock posé sur litellm.acompletion
+# (bug réel repéré par 2 échecs sur 6 tests -- "OUI"/"Yes" attendus True
+# mais reçus False, puisque le stub renvoie toujours False : les tests qui
+# attendaient False "passaient" par coïncidence, sans rien vérifier).
+_REAL_CLASSIFY_PROMPT_INJECTION = planner._classify_prompt_injection
+
 
 def _fake_tool(name: str, description: str = "desc", schema: dict | None = None):
     return SimpleNamespace(name=name, description=description, inputSchema=schema or {"type": "object"})
@@ -853,6 +865,13 @@ async def test_build_plan_keeps_real_text_when_prompt_mixes_text_and_emoji(monke
 
 
 async def test_classify_prompt_injection_parses_oui_as_true(monkeypatch):
+    # Restaure la VRAIE implémentation par-dessus le stub posé par la
+    # fixture autouse _bypass_injection_classifier -- voir le commentaire
+    # sur _REAL_CLASSIFY_PROMPT_INJECTION en tête de fichier. Sans cette
+    # ligne, l'assertion ci-dessous appellerait le stub (toujours False),
+    # jamais le vrai parsing de la réponse mockée.
+    monkeypatch.setattr(planner, "_classify_prompt_injection", _REAL_CLASSIFY_PROMPT_INJECTION)
+
     async def fake_acompletion(**kwargs):
         return _fake_llm_response(content="OUI")
 
@@ -862,6 +881,8 @@ async def test_classify_prompt_injection_parses_oui_as_true(monkeypatch):
 
 
 async def test_classify_prompt_injection_parses_non_as_false(monkeypatch):
+    monkeypatch.setattr(planner, "_classify_prompt_injection", _REAL_CLASSIFY_PROMPT_INJECTION)
+
     async def fake_acompletion(**kwargs):
         return _fake_llm_response(content="NON")
 
@@ -871,6 +892,8 @@ async def test_classify_prompt_injection_parses_non_as_false(monkeypatch):
 
 
 async def test_classify_prompt_injection_accepts_english_yes_no(monkeypatch):
+    monkeypatch.setattr(planner, "_classify_prompt_injection", _REAL_CLASSIFY_PROMPT_INJECTION)
+
     async def fake_acompletion(**kwargs):
         return _fake_llm_response(content="Yes")
 
@@ -885,6 +908,8 @@ async def test_classify_prompt_injection_fails_open_on_llm_error(monkeypatch):
     vraie demande d'onboarding à cause d'un problème d'infrastructure sans
     rapport avec une tentative d'injection -- le classifieur doit "échouer
     ouvert" (False), pas remonter l'exception."""
+    monkeypatch.setattr(planner, "_classify_prompt_injection", _REAL_CLASSIFY_PROMPT_INJECTION)
+
     async def failing_acompletion(**kwargs):
         raise RuntimeError("boom -- LLM injoignable")
 
@@ -898,6 +923,8 @@ async def test_classify_prompt_injection_fails_open_on_unexpected_response_shape
     modèle local peu docile qui ignore la consigne de format) : traité
     comme False plutôt que de planter ou de bloquer par excès de prudence
     sur une réponse qu'on n'a pas su interpréter."""
+    monkeypatch.setattr(planner, "_classify_prompt_injection", _REAL_CLASSIFY_PROMPT_INJECTION)
+
     async def fake_acompletion(**kwargs):
         return _fake_llm_response(content="Je ne suis pas sûr de comprendre la question.")
 
