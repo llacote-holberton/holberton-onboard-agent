@@ -69,16 +69,30 @@ class AgentAIError(httpx.HTTPError):
     """DURCISSEMENT (2026-08-21, Laurent) -- raised instead of plain
     httpx.HTTPStatusError when the Agent AI responds with an error status.
     Subclasses httpx.HTTPError so existing `except httpx.HTTPError` call
-    sites (see routers/plans.py) keep catching it unchanged, but carries
-    the agent's own already-human-readable `detail` message (see
-    agent/main.py::_describe_llm_error) instead of the generic status
-    line httpx.HTTPStatusError.__str__() produces by default (e.g. "502
-    Server Error: Bad Gateway for url: ...", which silently drops the
-    actually useful explanation of WHY -- missing/invalid API key,
-    network unreachable, timeout... -- see the DURCISSEMENT palier,
-    scénario 3: "je coupe le réseau / fausse clé, l'app doit le dire.")"""
+    sites (see routers/plans.py) keep catching it unchanged even where it
+    isn't caught explicitly, but carries the agent's own already-human-
+    readable `detail` message (see agent/main.py::_describe_llm_error)
+    instead of the generic status line httpx.HTTPStatusError.__str__()
+    produces by default (e.g. "502 Server Error: Bad Gateway for url:
+    ...", which silently drops the actually useful explanation of WHY --
+    missing/invalid API key, network unreachable, timeout... -- see the
+    DURCISSEMENT palier, scénario 3: "je coupe le réseau / fausse clé,
+    l'app doit le dire.")
 
-    def __init__(self, detail: str):
+    CORRECTIF (2026-08-24, Laurent) -- status_code et detail gardés comme
+    deux attributs SÉPARÉS plutôt que fondus dans une seule chaîne
+    ("Agent AI a répondu 503 : ..."). Avant ce correctif, routers/plans.py
+    ne catchait cette exception qu'implicitement via `except
+    httpx.HTTPError`, qui renvoie TOUJOURS 502 au navigateur quel que soit
+    le vrai code -- un vrai 503/504 de l'agent devenait un 502 générique,
+    et le message affiché doublait le préfixe ("Agent AI /plan call
+    failed: Agent AI a répondu 503 : ..."). Voir routers/plans.py pour le
+    `except AgentAIError` désormais explicite qui répercute exc.status_code
+    et exc.detail tels quels."""
+
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
         super().__init__(detail)
 
 
@@ -94,7 +108,7 @@ def _raise_for_status_with_detail(response: httpx.Response) -> None:
     except ValueError:
         pass
     if detail:
-        raise AgentAIError(f"Agent AI a répondu {response.status_code} : {detail}")
+        raise AgentAIError(response.status_code, detail)
     response.raise_for_status()  # fallback: no JSON detail, generic message
 
 

@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models import Action, Plan
 from app.schemas import ExecuteResult, PlanCreateRequest, PlanRead
 from app.services import agent_client
+from app.services.agent_client import AgentAIError
 from app.services.audit import log_action_status
 from app.services.idempotency import compute_idempotency_key
 
@@ -32,10 +33,24 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
 
     try:
         plan_response = await agent_client.plan(body.prompt)
+    except AgentAIError as exc:
+        # CORRECTIF (2026-08-24, Laurent, portage de a2b16b7 depuis
+        # feature/palier5) -- forward the agent's own status_code/detail
+        # unchanged, rather than squashing every AgentAIError into a
+        # generic 502 built from the raw exception (see AgentAIError's
+        # own docstring for the bug this fixes). Must come BEFORE the
+        # httpx.HTTPError branch below, since AgentAIError subclasses it
+        # and would otherwise be caught there instead, silently losing
+        # the real status code.
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except httpx.HTTPError as exc:
         # Nothing was flushed/committed yet at this point, so there is
         # nothing to roll back -- but calling it explicitly documents the
         # intent and protects this code if that ordering ever changes.
+        # This branch is for when the agent couldn't even be reached at
+        # all (network failure, connection refused, timeout) -- AgentAIError
+        # above handles the case where it responded with an error status.
         db.rollback()
         raise HTTPException(status_code=502, detail=f"Agent AI /plan call failed: {exc}") from exc
 
@@ -66,9 +81,9 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
         # jamais une table déjà existante) remonte comme un 500 brut sans
         # aucun détail, alors même que l'agent avait répondu correctement.
         # Repro rapportée par Hugo (24/08) : "500 Server Error" générique,
-        # pas 502 -- signe que ça casse ICI, après l'appel agent, pas dans
-        # l'appel lui-même (voir agent_client.AgentAIError, déjà catché par
-        # `except httpx.HTTPError` ci-dessus et déjà bien détaillé).
+        # pas 502/503 -- signe que ça casse ICI, après l'appel agent, pas
+        # dans l'appel lui-même (voir le `except AgentAIError` explicite
+        # juste au-dessus, qui gère désormais ce second cas séparément).
         db.rollback()
         logger.exception("Erreur inattendue en persistant le plan")
         raise HTTPException(
@@ -154,6 +169,11 @@ async def execute_plan(plan_id: str, db: Session = Depends(get_db)):
                     for a in to_dispatch
                 ]
             )
+        except AgentAIError as exc:
+            # Same reasoning as create_plan() above: forward the agent's
+            # own status_code/detail instead of a generic wrapper string.
+            db.rollback()
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         except httpx.HTTPError as exc:
             # Actions already resolved as duplicates above are rolled back
             # too -- the whole execute call fails together, the client can

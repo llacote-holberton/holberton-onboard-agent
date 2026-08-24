@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import httpx
 
 from app.models import Action, Plan
+from app.services.agent_client import AgentAIError
 
 
 def test_create_plan_returns_502_when_agent_ai_is_unreachable(client, db_session, monkeypatch):
@@ -35,6 +36,35 @@ def test_create_plan_returns_502_when_agent_ai_is_unreachable(client, db_session
 
     assert response.status_code == 502
     assert "Agent AI" in response.json()["detail"]
+    assert db_session.query(Plan).count() == 0  # nothing persisted on failure
+
+
+def test_create_plan_forwards_agent_status_code_and_detail_on_agent_ai_error(client, db_session, monkeypatch):
+    """CORRECTIF (2026-08-24, Laurent, portage de a2b16b7 depuis
+    feature/palier5) -- when the agent responds with its own clear error
+    (AgentAIError, e.g. a 503 because the LLM provider is unreachable),
+    the real status code and the agent's own detail must reach the
+    frontend UNCHANGED -- not squashed into a generic 502, and not
+    double-prefixed ("Agent AI /plan call failed: Agent AI a répondu
+    503 : ..."), which is exactly what Hugo reported live before this fix."""
+    monkeypatch.setattr(
+        "app.services.agent_client.plan",
+        AsyncMock(
+            side_effect=AgentAIError(
+                503,
+                "Impossible de joindre le fournisseur LLM (ollama_chat) -- "
+                "réseau indisponible ou service injoignable.",
+            )
+        ),
+    )
+
+    response = client.post("/plans", json={"prompt": "onboard Jane Doe"})
+
+    assert response.status_code == 503  # the agent's real status code, not a generic 502
+    assert response.json()["detail"] == (
+        "Impossible de joindre le fournisseur LLM (ollama_chat) -- "
+        "réseau indisponible ou service injoignable."
+    )
     assert db_session.query(Plan).count() == 0  # nothing persisted on failure
 
 
@@ -171,6 +201,32 @@ def test_execute_records_error_status_when_agent_reports_a_failure(client, db_se
 
     db_session.refresh(action)
     assert action.status == "error"
+
+
+def test_execute_forwards_agent_status_code_and_detail_on_agent_ai_error(client, db_session, monkeypatch):
+    """Same guarantee as create_plan()'s equivalent test above, for the
+    execute path."""
+    plan = Plan(prompt="onboard Jane Doe")
+    action = Action(
+        tool="create_onboarding_issue",
+        params={"employee": "Jane Doe"},
+        summary="Create the onboarding issue",
+        idempotency_key="key-1",
+        status="approved",
+    )
+    plan.actions.append(action)
+    db_session.add(plan)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.agent_client.execute",
+        AsyncMock(side_effect=AgentAIError(504, "Le fournisseur LLM (anthropic) n'a pas répondu à temps.")),
+    )
+
+    response = client.post(f"/plans/{plan.id}/execute")
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == "Le fournisseur LLM (anthropic) n'a pas répondu à temps."
 
 
 def test_execute_skips_action_already_executed_under_another_plan(client, db_session, monkeypatch):
