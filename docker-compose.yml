@@ -110,6 +110,10 @@ services:
       # agent/planner.py::_LLM_CALL_TIMEOUT. backend and frontend read
       # this SAME variable below and each add their own margin in code.
       - LLM_CALL_TIMEOUT_SECONDS=${LLM_CALL_TIMEOUT_SECONDS:-110}
+      # Garde-fou anti-boucle-infinie : nombre maximum d'allers-retours
+      # avec le modèle pour un seul /plan -- voir .env.example et
+      # agent/planner.py::_MAX_TURNS pour le détail complet.
+      - MAX_TURNS=${MAX_TURNS:-8}
       # Used to tell Python to not output Warning level (only) messages
       # Useful if using Google ADK because we won't configure
       #  "Google Application Default Credentials" so warns it fallbacks on "local".

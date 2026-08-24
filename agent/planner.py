@@ -420,7 +420,15 @@ _LLM_CALL_TIMEOUT = int(
 # 8 (au lieu de 6) depuis la RECONCILIATION ÉTAPE 2 -- voir docstring de
 # module : avec 5 tools fonctionnels, 6 tours ne laissait aucune marge
 # au-delà du cas nominal (5 actions + 1 conclusion).
-_MAX_TURNS = 8
+#
+# CORRECTIF (2026-08-24, Laurent) -- exposé via MAX_TURNS (env), plus une
+# valeur en dur : un onboarding avec davantage de tools fonctionnels que
+# les 5 actuels redemanderait la même sorte d'ajustement. ATTENTION si
+# vous l'augmentez significativement : voir le commentaire juste au-dessus
+# de _LLM_CALL_TIMEOUT ci-dessus sur l'angle mort assumé du chaînage de
+# timeout -- le pire cas théorique (_MAX_TURNS x LLM_CALL_TIMEOUT_SECONDS)
+# n'est actuellement PAS répercuté sur la marge donnée au backend/frontend.
+_MAX_TURNS = int(os.environ.get("MAX_TURNS", "8"))
 
 # Tools en LECTURE SEULE, sans aucun effet de bord, que le planificateur
 # exécute lui-même automatiquement pendant la boucle (contrairement aux

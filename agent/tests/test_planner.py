@@ -514,7 +514,14 @@ async def test_build_plan_falls_back_to_generic_nudge_when_nothing_remains(monke
     assert nudge_message == planner._NUDGE
 
 
-def test_max_turns_is_eight():
+def test_max_turns_is_eight_by_default():
+    """CORRECTIF (2026-08-24, Laurent) -- _MAX_TURNS est désormais dérivé
+    de la variable d'environnement MAX_TURNS (voir .env.example et
+    docker-compose.yml), plus une constante en dur -- mais reste évalué
+    une seule fois à l'IMPORT du module planner, pas à chaque appel. Ce
+    test verrouille donc la valeur par défaut (8) telle qu'importée pour
+    cette suite de tests, pas un comportement dynamique -- monkeypatcher
+    MAX_TURNS ici n'aurait aucun effet sans recharger le module."""
     assert planner._MAX_TURNS == 8
 
 
