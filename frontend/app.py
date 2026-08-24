@@ -250,7 +250,17 @@ if plan:
                         )
                         decision.raise_for_status()
 
-                    execution = requests.post(f"{BACKEND_URL}/plans/{plan['id']}/execute", timeout=60)
+                    # CORRECTIF (2026-08-24, Laurent) : timeout en dur (60s)
+                    # remplacé par _PLAN_GENERATION_TIMEOUT -- l'exécution
+                    # passe par la même chaîne backend -> agent -> MCP que
+                    # /plan (dispatch synchrone des actions), autorisée
+                    # côté agent jusqu'à AGENT_PLAN_TIMEOUT_SECONDS (voir
+                    # backend/app/config.py). Un timeout frontend plus
+                    # court pouvait afficher une erreur alors que
+                    # l'exécution était encore légitimement en cours.
+                    execution = requests.post(
+                        f"{BACKEND_URL}/plans/{plan['id']}/execute", timeout=_PLAN_GENERATION_TIMEOUT
+                    )
                     execution.raise_for_status()
                     results = execution.json()
 
