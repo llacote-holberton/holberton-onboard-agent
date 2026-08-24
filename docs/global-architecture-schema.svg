@@ -1,0 +1,174 @@
+<svg width="1580" height="900" viewBox="0 0 1580 900" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#4a463c"/>
+    </marker>
+    <marker id="arrowDashed" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#8a8578"/>
+    </marker>
+    <marker id="arrowDotted" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#6b6656"/>
+    </marker>
+  </defs>
+
+  <rect width="1580" height="900" fill="#ffffff"/>
+
+  <text x="790" y="32" text-anchor="middle" font-size="19" font-weight="700" fill="#2c2a24">Architecture — Onboarding Agent (provider-agnostic LLM via LiteLLM, MCP, separate frontend / backend)</text>
+
+  <!-- Browser -->
+  <rect x="170" y="60" width="260" height="70" rx="12" fill="#F2EFE6" stroke="#8A8578" stroke-width="2"/>
+  <text x="300" y="88" text-anchor="middle" font-size="15" font-weight="700" fill="#3a3630">Manager's workstation</text>
+  <text x="300" y="107" text-anchor="middle" font-size="12" fill="#5f594c">web browser</text>
+
+  <!-- Docker compose boundary -->
+  <rect x="110" y="170" width="1130" height="570" rx="16" fill="none" stroke="#4a86c8" stroke-width="2" stroke-dasharray="10,6"/>
+  <text x="130" y="196" font-size="13" font-weight="700" fill="#2c5d94">docker-compose.yml</text>
+
+  <!-- Frontend -->
+  <rect x="150" y="210" width="300" height="140" rx="12" fill="#F2EFE6" stroke="#8A8578" stroke-width="2"/>
+  <text x="300" y="236" text-anchor="middle" font-size="15" font-weight="700" fill="#3a3630">Frontend — Streamlit</text>
+  <text x="300" y="256" text-anchor="middle" font-size="12" fill="#5f594c">container: 8501</text>
+  <text x="300" y="278" text-anchor="middle" font-size="12" fill="#5f594c">Chat prompt</text>
+  <text x="300" y="296" text-anchor="middle" font-size="12" fill="#5f594c">Checklist of proposed actions</text>
+  <text x="300" y="314" text-anchor="middle" font-size="12" fill="#5f594c">Execute / Undo buttons</text>
+  <text x="300" y="332" text-anchor="middle" font-size="12" fill="#5f594c">Audit log</text>
+
+  <!-- Backend -->
+  <rect x="520" y="210" width="425" height="130" rx="12" fill="#F2EFE6" stroke="#8A8578" stroke-width="2"/>
+  <text x="732" y="234" text-anchor="middle" font-size="15" font-weight="700" fill="#3a3630">Backend — FastAPI (container: 8000)</text>
+  <text x="732" y="254" text-anchor="middle" font-size="11.5" fill="#5f594c">REST API + SQLAlchemy (Plan, Action, Employee, AuditLog)</text>
+  <text x="732" y="272" text-anchor="middle" font-size="11.5" fill="#5f594c">delegates planning AND execution → Agent AI</text>
+  <text x="732" y="290" text-anchor="middle" font-size="11.5" fill="#5f594c">delegates only cancellation → MCP server (direct)</text>
+  <text x="732" y="308" text-anchor="middle" font-size="11.5" fill="#5f594c">checks idempotency and writes the audit trail before/after each call</text>
+
+  <!-- Agent AI -->
+  <rect x="520" y="380" width="200" height="170" rx="10" fill="#E7E4FB" stroke="#5B4FC7" stroke-width="2"/>
+  <text x="620" y="406" text-anchor="middle" font-size="14" font-weight="700" fill="#2f2680">Agent AI</text>
+  <text x="620" y="424" text-anchor="middle" font-size="11" fill="#453aa8">container: 8100</text>
+  <text x="620" y="442" text-anchor="middle" font-size="10.5" fill="#453aa8">/plan: builds the prompt +</text>
+  <text x="620" y="458" text-anchor="middle" font-size="10.5" fill="#453aa8">queries the LLM via LiteLLM,</text>
+  <text x="620" y="474" text-anchor="middle" font-size="10.5" fill="#453aa8">only proposes, executes nothing</text>
+  <text x="620" y="494" text-anchor="middle" font-size="10.5" fill="#453aa8">/execute: mechanical dispatch</text>
+  <text x="620" y="510" text-anchor="middle" font-size="10.5" fill="#453aa8">of already-approved actions</text>
+  <text x="620" y="526" text-anchor="middle" font-size="10.5" fill="#453aa8">(real side effect, no LLM)</text>
+
+  <!-- MCP server -->
+  <rect x="745" y="380" width="200" height="170" rx="10" fill="#E7E4FB" stroke="#5B4FC7" stroke-width="2"/>
+  <text x="845" y="406" text-anchor="middle" font-size="14" font-weight="700" fill="#2f2680">MCP Server</text>
+  <text x="845" y="424" text-anchor="middle" font-size="11" fill="#453aa8">container: 8200</text>
+  <text x="845" y="444" text-anchor="middle" font-size="10.5" fill="#453aa8">8 MCP tools: 5 actions,</text>
+  <text x="845" y="461" text-anchor="middle" font-size="10.5" fill="#453aa8">list_teams (read-only),</text>
+  <text x="845" y="478" text-anchor="middle" font-size="10.5" fill="#453aa8">2 dedicated compensations</text>
+  <text x="845" y="495" text-anchor="middle" font-size="10.5" fill="#453aa8">(no generic undo)</text>
+  <text x="845" y="515" text-anchor="middle" font-size="10.5" fill="#453aa8">Executes the real side</text>
+  <text x="845" y="532" text-anchor="middle" font-size="10.5" fill="#453aa8">effects, on Agent AI's order</text>
+
+  <!-- Ollama (optional) -->
+  <rect x="520" y="570" width="200" height="120" rx="10" fill="#F2EFE6" stroke="#8A8578" stroke-width="2" stroke-dasharray="5,4"/>
+  <text x="620" y="596" text-anchor="middle" font-size="14" font-weight="700" fill="#3a3630">Ollama (optional)</text>
+  <text x="620" y="614" text-anchor="middle" font-size="11" fill="#5f594c">compose profile "local-llm"</text>
+  <text x="620" y="630" text-anchor="middle" font-size="11" fill="#5f594c">off by default</text>
+  <text x="620" y="646" text-anchor="middle" font-size="11" fill="#5f594c">LLM_MODEL_NAME=</text>
+  <text x="620" y="662" text-anchor="middle" font-size="11" fill="#5f594c">ollama_chat/&lt;tag&gt;</text>
+
+  <!-- MailHog -->
+  <rect x="990" y="420" width="200" height="100" rx="10" fill="#F2EFE6" stroke="#8A8578" stroke-width="2"/>
+  <text x="1090" y="446" text-anchor="middle" font-size="14" font-weight="700" fill="#3a3630">MailHog</text>
+  <text x="1090" y="464" text-anchor="middle" font-size="11" fill="#5f594c">SMTP: 1025 · UI: 8025</text>
+  <text x="1090" y="482" text-anchor="middle" font-size="11" fill="#5f594c">fake mail server /</text>
+  <text x="1090" y="498" text-anchor="middle" font-size="11" fill="#5f594c">fake mailbox</text>
+
+  <!-- Volume -->
+  <rect x="990" y="530" width="200" height="100" rx="10" fill="#F2EFE6" stroke="#8A8578" stroke-width="2"/>
+  <text x="1090" y="552" text-anchor="middle" font-size="14" font-weight="700" fill="#3a3630">Docker Volume</text>
+  <text x="1090" y="570" text-anchor="middle" font-size="11" fill="#5f594c">SQLite (.db file)</text>
+  <text x="1090" y="586" text-anchor="middle" font-size="10.5" fill="#5f594c">Generated HTML (PDF: roadmap)</text>
+  <text x="1090" y="602" text-anchor="middle" font-size="11" fill="#5f594c">.ics files</text>
+
+  <!-- External: LLM Provider -->
+  <rect x="1270" y="380" width="260" height="170" rx="12" fill="#F7F5EF" stroke="#9a9a9a" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="1400" y="406" text-anchor="middle" font-size="14" font-weight="700" fill="#55524a">LLM Provider (external)</text>
+  <text x="1400" y="426" text-anchor="middle" font-size="11.5" fill="#77746a">default: Anthropic Claude</text>
+  <text x="1400" y="443" text-anchor="middle" font-size="10.5" fill="#77746a">(anthropic/claude-sonnet-4-6)</text>
+  <text x="1400" y="461" text-anchor="middle" font-size="11.5" fill="#77746a">provider-agnostic via LiteLLM:</text>
+  <text x="1400" y="477" text-anchor="middle" font-size="10.5" fill="#77746a">OpenAI, Gemini, NVIDIA NIM,</text>
+  <text x="1400" y="493" text-anchor="middle" font-size="10.5" fill="#77746a">Bedrock, Azure, ~100 providers</text>
+  <text x="1400" y="513" text-anchor="middle" font-size="11.5" fill="#77746a">Remote API, HTTPS</text>
+  <text x="1400" y="530" text-anchor="middle" font-size="10.5" fill="#77746a">(see docs.litellm.ai)</text>
+
+  <!-- External: GitHub -->
+  <rect x="1270" y="570" width="260" height="140" rx="12" fill="#F7F5EF" stroke="#9a9a9a" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="1400" y="596" text-anchor="middle" font-size="14" font-weight="700" fill="#55524a">GitHub Issues API</text>
+  <text x="1400" y="616" text-anchor="middle" font-size="11.5" fill="#77746a">real tracker (dedicated repo)</text>
+  <text x="1400" y="634" text-anchor="middle" font-size="11.5" fill="#77746a">auth via personal token</text>
+  <text x="1400" y="652" text-anchor="middle" font-size="10.5" fill="#77746a">external service: issue</text>
+  <text x="1400" y="668" text-anchor="middle" font-size="10.5" fill="#77746a">creation/closing only</text>
+  <text x="1400" y="684" text-anchor="middle" font-size="10.5" fill="#77746a">(GITHUB_TOKEN/REPO in</text>
+  <text x="1400" y="700" text-anchor="middle" font-size="10.5" fill="#77746a">.env, optional)</text>
+
+  <!-- Arrows -->
+  <!-- Browser -> Frontend -->
+  <line x1="300" y1="130" x2="300" y2="208" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Frontend <-> Backend -->
+  <line x1="452" y1="260" x2="518" y2="260" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="518" y1="285" x2="452" y2="285" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="485" y="246" text-anchor="middle" font-size="10.5" font-weight="700" fill="#2c2a24">HTTP/JSON</text>
+  <text x="485" y="304" text-anchor="middle" font-size="9.5" fill="#5f594c">only frontend↔backend channel</text>
+
+  <!-- Backend -> Agent AI (planning AND execution) -->
+  <line x1="620" y1="340" x2="620" y2="378" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="700" y="358" text-anchor="middle" font-size="9.5" fill="#5f594c">planning +</text>
+  <text x="700" y="371" text-anchor="middle" font-size="9.5" fill="#5f594c">execution</text>
+
+  <!-- Backend -> MCP server (undo only) -->
+  <line x1="845" y1="340" x2="845" y2="378" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="915" y="358" text-anchor="middle" font-size="9.5" fill="#5f594c">cancellation (undo)</text>
+  <text x="915" y="371" text-anchor="middle" font-size="9.5" fill="#5f594c">only -- bypasses agent</text>
+
+  <!-- Agent AI -> MCP server: read-only discovery (dotted) -->
+  <line x1="722" y1="443" x2="743" y2="443" stroke="#6b6656" stroke-width="2" stroke-dasharray="2,3" marker-end="url(#arrowDotted)"/>
+  <text x="732" y="430" text-anchor="middle" font-size="8.5" fill="#6b6656">list_tools() + list_teams()</text>
+
+  <!-- Agent AI -> MCP server: real dispatch (solid) -->
+  <line x1="722" y1="475" x2="743" y2="475" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="732" y="491" text-anchor="middle" font-size="8.5" fill="#3a3630">real call_tool()</text>
+
+  <!-- Agent AI -> Ollama (optional) -->
+  <line x1="620" y1="550" x2="620" y2="568" stroke="#4a463c" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+  <text x="700" y="562" text-anchor="middle" font-size="9.5" fill="#5f594c">if local-llm profile active</text>
+
+  <!-- Agent AI -> LLM Provider (external, default path) -->
+  <path d="M710,378 L710,343 L1248,343 L1248,465 L1268,465" fill="none" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="980" y="333" text-anchor="middle" font-size="10.5" fill="#5f594c">LiteLLM -- tool-calling (default path)</text>
+
+  <!-- MCP server -> MailHog -->
+  <line x1="945" y1="465" x2="988" y2="465" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="967" y="453" text-anchor="middle" font-size="9" fill="#5f594c">SMTP</text>
+
+  <!-- MCP server -> Volume -->
+  <line x1="945" y1="525" x2="988" y2="568" stroke="#4a463c" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="985" y="540" text-anchor="middle" font-size="9" fill="#5f594c">files/DB</text>
+
+  <!-- MCP server -> GitHub (pass-through above MailHog/Volume) -->
+  <path d="M945,395 L1255,395 L1255,640 L1268,640" fill="none" stroke="#8a8578" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#arrowDashed)"/>
+  <text x="1170" y="383" text-anchor="middle" font-size="10.5" fill="#5f594c">issue creation / closing</text>
+
+  <!-- Note -->
+  <text x="130" y="765" font-size="12.5" fill="#2c2a24">Note: the frontend never accesses the database or generated files directly — everything goes through the backend's REST API.</text>
+  <text x="130" y="785" font-size="12.5" fill="#2c2a24">Backend and mcp-server share the same Docker volume (a single SQLite file).</text>
+  <text x="130" y="803" font-size="12.5" fill="#2c2a24">Agent AI actually executes approved actions (real side effect); only cancellation bypasses the agent (Structuring decision #2).</text>
+
+  <!-- Legend -->
+  <rect x="130" y="828" width="18" height="18" rx="4" fill="#E7E4FB" stroke="#5B4FC7" stroke-width="2"/>
+  <text x="156" y="842" font-size="12.5" fill="#2c2a24">Purple = application core (Agent AI + MCP server / tools)</text>
+
+  <rect x="560" y="828" width="18" height="18" rx="4" fill="#F2EFE6" stroke="#8A8578" stroke-width="2"/>
+  <text x="586" y="842" font-size="12.5" fill="#2c2a24">Beige = interface, storage, compose infra (including Ollama, optional)</text>
+
+  <rect x="1080" y="828" width="18" height="18" rx="4" fill="#F7F5EF" stroke="#9a9a9a" stroke-width="2" stroke-dasharray="4,3"/>
+  <text x="1106" y="842" font-size="12.5" fill="#2c2a24">Wide dashes = external service: default LLM + GitHub</text>
+
+  <text x="130" y="868" font-size="11.5" fill="#5f594c">Fine dots (Agent AI ↔ MCP server) = read-only call (tool schema, list_teams). Solid line = call with a real side effect (call_tool).</text>
+  <text x="130" y="886" font-size="11.5" fill="#5f594c">Thin dashed border on a box (e.g. Ollama) = optional component / off by default, distinct from an "external service" (wide grey dashes).</text>
+</svg>

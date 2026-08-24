@@ -306,7 +306,7 @@ Prompt injection (a user typing something like *"ignore tes instructions précé
 
 #### Testing & Code Coverage
 
-Backend and agent modules have solid automated test coverage; MCP server tool implementations are covered progressively as they're completed. Coverage isn't yet uniform across the whole codebase — see the forthcoming `TESTING.md` for the detailed strategy and current state. `eval/cases.md` additionally tracks a small hand-curated set of end-to-end scenarios (general multi-action request, single explicit action, off-topic refusal, invalid team name, prompt-injection attempt) with their expected behavior, runnable against a live backend via `python3 eval/run_eval.py` — this is a behavioral/regression score for the agent's actual planning output, distinct from unit test coverage.
+Backend and agent modules have solid automated test coverage; MCP server tool implementations are covered progressively as they're completed. Coverage isn't yet uniform across the whole codebase — see `docs/TESTING.md` for the detailed strategy and current state. `eval/cases.md` additionally tracks a small hand-curated set of end-to-end scenarios (general multi-action request, single explicit action, off-topic refusal, invalid team name, prompt-injection attempt) with their expected behavior, runnable against a live backend via `python3 eval/run_eval.py` — this is a behavioral/regression score for the agent's actual planning output, distinct from unit test coverage.
 
 ## Examples of use
 
@@ -328,7 +328,7 @@ PREAMBLE: please note the important restrictions and limitations.
 
 ## Technical information
 
-This section aims at providing a general view of the project from an architectural point of view. A complete technical document with full list of technical diagrams will be added later in `ARCHITECTURE.md`.
+This section aims at providing a general view of the project from an architectural point of view. A complete technical document with full list of technical diagrams is available at [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ### General architecture
 
@@ -369,9 +369,7 @@ flowchart LR
 
 ### Architecture macro diagram
 
-FIXME: A detailed macro diagram will be provided separately in `ARCHITECTURE.md`.
-
-<p align="center"> <img src="[PATH TO ARCHITECTURE DIAGRAM]" alt="[DESCRIPTION OF ARCHITECTURE DIAGRAM]" width="600"> </p>
+<p align="center"> <img src="docs/global-architecture-schema.svg" alt="Global architecture document" width="600"> </p>
 
 
 ### Memory management & Performance
@@ -382,7 +380,7 @@ On the local Ollama path, memory is the main practical constraint: even the smal
 
 ## Testing
 
-Backend and agent modules are covered by an extensive `pytest` suite. MCP server tool implementations are covered as they're completed. Full test strategy, coverage details and CI information will be documented separately in `TESTING.md`.
+Backend and agent modules are covered by an extensive `pytest` suite. MCP server tool implementations are covered as they're completed. Full test strategy, coverage details and CI information will be documented separately in `docs/TESTING.md`.
 
 On top of unit tests, `eval/cases.md` tracks a small set of end-to-end behavioral scenarios against a running backend, with a runnable score (`python3 eval/run_eval.py`, or `BACKEND_URL=... python3 eval/run_eval.py` against a non-default host/port) — see [Testing & Code Coverage](#testing--code-coverage) above.
 
