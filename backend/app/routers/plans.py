@@ -51,8 +51,19 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
         # This branch is for when the agent couldn't even be reached at
         # all (network failure, connection refused, timeout) -- AgentAIError
         # above handles the case where it responded with an error status.
+        # Message volontairement simple pour l'utilisateur final -- le
+        # détail technique brut (ex: "[Errno 61] Connection refused") part
+        # dans les logs via logger.exception, pas à l'écran.
         db.rollback()
-        raise HTTPException(status_code=502, detail=f"Agent AI /plan call failed: {exc}") from exc
+        logger.exception("Agent AI /plan injoignable")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Le service de planification est actuellement indisponible. "
+                "Réessayez dans quelques instants ; si le problème persiste, "
+                "contactez l'administrateur."
+            ),
+        ) from exc
 
     proposed_actions = plan_response["actions"]
     plan.clarification = plan_response.get("clarification")
@@ -180,9 +191,19 @@ async def execute_plan(plan_id: str, db: Session = Depends(get_db)):
         except httpx.HTTPError as exc:
             # Actions already resolved as duplicates above are rolled back
             # too -- the whole execute call fails together, the client can
-            # retry once the agent is reachable.
+            # retry once the agent is reachable. Message simplifié pour
+            # l'utilisateur, même raisonnement que dans create_plan() plus
+            # haut -- détail technique dans les logs seulement.
             db.rollback()
-            raise HTTPException(status_code=502, detail=f"Agent AI /execute call failed: {exc}") from exc
+            logger.exception("Agent AI /execute injoignable")
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Le service d'exécution des actions est actuellement "
+                    "indisponible. Réessayez dans quelques instants ; si le "
+                    "problème persiste, contactez l'administrateur."
+                ),
+            ) from exc
 
         outcomes_by_id = {r["action_id"]: r for r in dispatched}
 
