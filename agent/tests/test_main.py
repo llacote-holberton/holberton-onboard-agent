@@ -35,7 +35,13 @@ def client():
 
 def test_plan_returns_502_with_clear_detail_when_api_key_is_rejected(client, monkeypatch):
     """Cas 'fausse clé' : LiteLLM lève AuthenticationError quel que soit
-    le fournisseur (clé absente, invalide, ou révoquée)."""
+    le fournisseur (clé absente, invalide, ou révoquée).
+
+    CORRECTIF (message utilisateur simplifié) : le message ne mentionne
+    plus LLM_MODEL_API_KEY/.env (jargon d'administrateur) -- juste "clé
+    d'accès refusée" + redirection vers l'administrateur. Le détail
+    technique (provider, variable à vérifier) reste dans les logs via
+    logger.exception, pas à l'écran."""
     async def raise_auth_error(prompt):
         raise litellm.AuthenticationError(
             message="invalid x-api-key", llm_provider="anthropic", model="claude-sonnet-4-6"
@@ -48,7 +54,29 @@ def test_plan_returns_502_with_clear_detail_when_api_key_is_rejected(client, mon
     assert response.status_code == 502
     detail = response.json()["detail"]
     assert "clé" in detail.lower()
-    assert "LLM_MODEL_API_KEY" in detail
+    assert "administrateur" in detail.lower()
+    assert "LLM_MODEL_API_KEY" not in detail  # jargon d'admin, plus affiché à l'écran
+
+
+def test_plan_returns_503_with_clear_detail_when_mcp_server_unreachable(client, monkeypatch):
+    """Cas 'mcp-server down pendant /plan' : le premier appel réseau de
+    build_plan() (_discover_tool_permissions) échoue AVANT tout appel LLM.
+    Doit être signalé comme le serveur MCP injoignable -- PAS comme "le
+    fournisseur LLM est injoignable" (mislabelling corrigé : sans le
+    except planner.McpUnavailableError dédié dans la route /plan, ce cas
+    tombait dans le filet générique par nom de classe et nommait à tort le
+    fournisseur LLM)."""
+    async def raise_mcp_unavailable(prompt):
+        raise planner.McpUnavailableError("Connection refused")
+
+    monkeypatch.setattr(planner, "build_plan", raise_mcp_unavailable)
+
+    response = client.post("/plan", json={"prompt": "Prépare l'arrivée de Camille"})
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "MCP" in detail
+    assert "fournisseur LLM" not in detail
 
 
 def test_plan_returns_503_with_clear_detail_when_network_is_cut(client, monkeypatch):

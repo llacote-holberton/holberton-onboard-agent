@@ -833,6 +833,37 @@ async def test_build_plan_short_circuits_on_emoji_only_prompt(monkeypatch):
     assert trace[0]["kind"] == "blocked"
 
 
+class _ConnectFailClient:
+    """Reproduit le comportement RÉEL de fastmcp.Client quand mcp-server
+    est injoignable (vérifié en conditions réelles, mcp-server arrêté au
+    moment d'écrire ce test) : son __aenter__ n'expose JAMAIS l'exception
+    réseau d'origine -- elle est systématiquement enveloppée dans
+    RuntimeError("Client failed to connect: ..."), voir
+    fastmcp/client/client.py. Un stand-in qui lèverait directement
+    ConnectionError/httpx.ConnectError ne reproduirait PAS ce
+    comportement, et n'aurait pas permis d'attraper la régression
+    corrigée ici : un premier essai avec `except httpx.RequestError`
+    ciblé ne matchait JAMAIS en pratique, laissant fuiter un RuntimeError
+    nu jusqu'à agent/main.py::_describe_llm_error, qui le classait alors
+    à tort comme "fournisseur LLM injoignable"."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        raise RuntimeError("Client failed to connect: [Errno -2] Name or service not known")
+
+    async def __aexit__(self, *args):
+        return False
+
+
+async def test_discover_tool_permissions_wraps_connection_failure(monkeypatch):
+    monkeypatch.setattr(planner, "Client", _ConnectFailClient)
+
+    with pytest.raises(planner.McpUnavailableError):
+        await planner._discover_tool_permissions()
+
+
 async def test_build_plan_keeps_real_text_when_prompt_mixes_text_and_emoji(monkeypatch):
     """Un prompt mixte (texte utile + emoji décoratif) ne doit PAS être
     rejeté : seul l'emoji est retiré, le texte continue vers le modèle
