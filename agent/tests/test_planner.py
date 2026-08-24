@@ -283,7 +283,7 @@ async def test_build_plan_sorts_allowed_calls_into_actions(monkeypatch):
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+    actions, excluded_actions, notice, trace = await planner.build_plan("un prompt")
 
     assert len(actions) == 1
     assert actions[0]["tool"] == "create_onboarding_issue"
@@ -316,7 +316,7 @@ async def test_build_plan_sorts_blocked_calls_into_excluded_actions_with_a_note(
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+    actions, excluded_actions, notice, trace = await planner.build_plan("un prompt")
 
     assert actions == []
     assert len(excluded_actions) == 1
@@ -335,7 +335,7 @@ async def test_build_plan_returns_notice_when_no_tool_call_at_all(monkeypatch):
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan("un prompt hors-sujet")
+    actions, excluded_actions, notice, trace = await planner.build_plan("un prompt hors-sujet")
 
     assert actions == []
     assert excluded_actions == []
@@ -376,7 +376,7 @@ async def test_build_plan_retries_once_when_model_narrates_instead_of_calling_a_
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+    actions, excluded_actions, notice, trace = await planner.build_plan("un prompt")
 
     assert call_count["n"] == 3  # narration + relance -> tool_call + conclusion "Terminé"
     assert len(actions) == 1
@@ -404,7 +404,7 @@ async def test_build_plan_only_retries_narration_once(monkeypatch):
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan("un prompt hors-sujet")
+    actions, excluded_actions, notice, trace = await planner.build_plan("un prompt hors-sujet")
 
     assert call_count["n"] == 2  # 1 relance seulement, pas plus
     assert actions == []
@@ -443,7 +443,7 @@ async def test_build_plan_targeted_nudge_lists_remaining_tools(monkeypatch):
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan("un prompt")
+    actions, excluded_actions, notice, trace = await planner.build_plan("un prompt")
 
     nudge_message = captured_calls[1][-1]["content"]
     assert "create_calendar_event" in nudge_message
@@ -729,7 +729,7 @@ async def test_build_plan_blocks_disallowed_tool_even_if_the_model_is_tricked(mo
     monkeypatch.setattr(planner, "_build_prompt_context", fake_context)
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
-    actions, excluded_actions, notice = await planner.build_plan(injected_prompt)
+    actions, excluded_actions, notice, trace = await planner.build_plan(injected_prompt)
 
     assert actions == [], "un tool non autorisé ne doit JAMAIS finir dans actions, même halluciné par le modèle"
     assert len(excluded_actions) == 1

@@ -121,7 +121,10 @@ async def plan(prompt: str) -> dict[str, Any]:
       same shape plus a "note" explaining why it can't run (see
       mcp_server/resources.py, agent/planner.py).
     - clarification: the model's own text when neither actions nor
-      excluded_actions were produced at all (e.g. off-topic prompt)."""
+      excluded_actions were produced at all (e.g. off-topic prompt).
+    - trace: turn-by-turn planning trace, for the frontend's "Pourquoi
+      ce plan ?" panel (CORRECTIF 2026-08-24, Laurent, portage de db8b25a
+      depuis feature/palier5 -- voir agent/planner.py::build_plan())."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{AGENT_AI_URL}/plan", json={"prompt": prompt})
         _raise_for_status_with_detail(response)
@@ -130,6 +133,7 @@ async def plan(prompt: str) -> dict[str, Any]:
             "actions": data["actions"],
             "excluded_actions": data.get("excluded_actions", []),
             "clarification": data.get("clarification"),
+            "trace": data.get("trace", []),
         }
 
 

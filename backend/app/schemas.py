@@ -89,6 +89,10 @@ class PlanRead(BaseModel):
     excluded_actions: list[dict[str, Any]] = []
     # Outils NON autorisés que le modèle aurait appelés -- chaque entrée :
     # {"tool": str, "params": dict, "summary": str, "note": str}.
+    trace: list[dict[str, Any]] = []
+    # CORRECTIF (2026-08-24, Laurent, portage de db8b25a depuis
+    # feature/palier5) -- trace tour-par-tour de la planification, voir
+    # app/models.py::Plan.trace et agent/planner.py::build_plan().
 
 
 # --- Execution / undo ----------------------------------------------------

@@ -37,6 +37,12 @@ class Plan(Base):
     # Outils NON autorisés que le modèle aurait appelés si rien ne l'en
     # empêchait -- même format que Action (tool/params/summary), plus une
     # note explicative. Voir mcp_server/resources.py, agent/planner.py.
+    trace = Column(JSON, nullable=False, default=list)
+    # CORRECTIF (2026-08-24, Laurent, portage de db8b25a depuis
+    # feature/palier5) -- trace tour-par-tour de la planification
+    # (exploration/proposal/final, + "narration" propre à dev_laurent),
+    # pour le panneau "Pourquoi ce plan ?" côté frontend. Voir
+    # agent/planner.py::build_plan().
     created_at = Column(DateTime, default=_now)
 
     actions = relationship("Action", back_populates="plan", cascade="all, delete-orphan")

@@ -57,6 +57,9 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
     proposed_actions = plan_response["actions"]
     plan.clarification = plan_response.get("clarification")
     plan.excluded_actions = plan_response.get("excluded_actions", [])
+    # CORRECTIF (2026-08-24, Laurent, portage de db8b25a depuis
+    # feature/palier5) -- trace tour-par-tour, voir app/models.py::Plan.trace.
+    plan.trace = plan_response.get("trace", [])
 
     for proposed in proposed_actions:
         action = Action(

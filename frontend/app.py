@@ -273,6 +273,39 @@ if plan:
 
         render_downloadable_files(plan["actions"])
 
+        # --- Observabilité (portage 2026-08-24, Laurent, depuis db8b25a
+        # de feature/palier5 -- Hugo) : "pourquoi l'agent a fait ça",
+        # vérifiable dans l'app -- pas seulement dans les logs Docker.
+        # Placé après le bouton d'exécution, pour ne pas s'interposer
+        # entre la checklist et l'action principale de la page.
+        #
+        # "narration" est un kind propre à dev_laurent, absent de la
+        # version d'origine de Hugo : il correspond à la relance ciblée
+        # de _FIRST_TURN_NARRATION_NUDGE (voir agent/planner.py), qui
+        # n'existe pas sur feature/palier5.
+        _KIND_ICONS = {
+            "exploration": "🔎",
+            "proposal": "✅",
+            "final": "🏁",
+            "narration": "💬",
+        }
+        _KIND_LABELS = {
+            "exploration": "Consultation",
+            "proposal": "Proposition",
+            "final": "Décision finale",
+            "narration": "Relance (narration)",
+        }
+        with st.expander("🔍 Pourquoi ce plan ?", expanded=False):
+            if plan.get("trace"):
+                for entry in plan["trace"]:
+                    icon = _KIND_ICONS.get(entry["kind"], "•")
+                    label = _KIND_LABELS.get(entry["kind"], entry["kind"])
+                    tool_part = f" `{entry['tool']}`" if entry.get("tool") else ""
+                    st.write(f"{icon} **Tour {entry['turn']}** · {label}{tool_part}")
+                    st.caption(entry["detail"])
+            else:
+                st.caption("Aucune trace disponible pour ce plan.")
+
         if st.session_state.trace is not None:
             st.subheader("Traçabilité de ce plan")
             st.caption(f"Plan `{plan['id']}` — du plus ancien au plus récent (GET /audit?plan_id=...).")

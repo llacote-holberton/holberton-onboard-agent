@@ -6,8 +6,8 @@ fournisseur, voir LLM CONFIGURATION -- AGNOSTIQUE plus bas) avec le
 prompt utilisateur. N'exécute AUCUNE action à effet de bord.
 
 Contrat consommé par backend/app/services/agent_client.py :
-  build_plan(prompt) -> (actions, excluded_actions, notice), voir
-  build_plan() plus bas pour le détail des trois éléments.
+  build_plan(prompt) -> (actions, excluded_actions, notice, trace), voir
+  build_plan() plus bas pour le détail des quatre éléments.
 
 RECONCILIATION (2026-08-20) : fusion de dev_laurent (défaut + résolution
 d'alias sur `team`/`name`, visibilité des champs manquants dans le résumé
@@ -754,8 +754,20 @@ def _append_tool_results(messages: list[dict], results: list[tuple[dict, str]]) 
         })
 
 
-async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
-    """Retourne (actions, excluded_actions, notice).
+def _summarize_result(data) -> str:
+    """Résumé lisible d'un résultat de tool exploratoire, pour la trace
+    affichée dans l'UI -- pas le JSON brut, une phrase courte. Portage
+    (2026-08-24, Laurent) depuis feature/palier5 (Hugo, db8b25a)."""
+    if isinstance(data, list):
+        items = ", ".join(str(x) for x in data[:6])
+        suffix = "..." if len(data) > 6 else ""
+        return f"{items}{suffix}"
+    text = str(data)
+    return text[:150] + ("..." if len(text) > 150 else "")
+
+
+async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None, list[dict]]:
+    """Retourne (actions, excluded_actions, notice, trace).
 
     Boucle multi-tours (palier 4) : construction du plan par relances
     successives ("autre chose ?"), plutôt qu'une énumération complète
@@ -782,7 +794,14 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
       une note expliquant pourquoi ce n'est pas exécutable actuellement.
     - notice : texte du modèle quand ni l'un ni l'autre n'a été produit
       (ex: demande hors-scope), OU message explicite si _MAX_TURNS est
-      atteint sans qu'aucune action n'ait pu être collectée."""
+      atteint sans qu'aucune action n'ait pu être collectée.
+    - trace : séquence tour par tour (exploration/proposition/narration/
+      final), exposée jusque dans l'UI pour l'observabilité (palier 5).
+      Portage (2026-08-24, Laurent) depuis feature/palier5 (Hugo,
+      db8b25a), adapté à la boucle de relance narration de cette branche
+      (voir first_turn_text ci-dessous) -- kind="narration" est un ajout
+      propre à ce portage, absent de la version d'origine, qui n'avait pas
+      ce mécanisme de relance unique."""
     llm_tools, system_prompt, allowed_names, tool_catalog = await _build_prompt_context(prompt)
 
     # Format OpenAI générique (voir LLM CONFIGURATION -- AGNOSTIQUE) : le
@@ -806,6 +825,11 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     # sans intérêt pour l'utilisateur.
     first_turn_text: str | None = None
     concluded = False  # True dès que le modèle répond sans tool_calls (fin normale)
+    trace: list[dict] = []
+    # Trace de la boucle, exposée jusque dans l'UI (pas seulement les logs
+    # Docker) -- palier 5, observabilité : "pourquoi l'agent a fait ça"
+    # doit être visible dans l'app, pas dans le code. Portage (24/08,
+    # Laurent) depuis feature/palier5 (Hugo, db8b25a).
     # RECONCILIATION 2026-08-20 (Laurent) -- voir docstring de module,
     # section "narration sans tool_call" : garde-fou pour n'accorder
     # qu'UNE seule relance de ce type, jamais plus (évite de transformer
@@ -856,6 +880,16 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 # toujours largement suffisant).
                 if turn == 0 and not narration_retry_used:
                     narration_retry_used = True
+                    trace.append({
+                        "turn": turn + 1,
+                        "kind": "narration",
+                        "tool": None,
+                        "detail": (
+                            f"Réponse en texte libre sans appel d'outil : {final_text!r}. "
+                            "Relance unique pour lui donner une vraie chance d'appeler "
+                            "un outil si c'était une narration de plan."
+                        ),
+                    })
                     messages.append(turn_result["assistant_entry"])
                     messages.append({"role": "user", "content": _FIRST_TURN_NARRATION_NUDGE})
                     print(
@@ -865,6 +899,12 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                     continue
 
                 concluded = True
+                trace.append({
+                    "turn": turn + 1,
+                    "kind": "final",
+                    "tool": None,
+                    "detail": (first_turn_text or final_text) or "(aucune action nécessaire)",
+                })
                 break
 
             messages.append(turn_result["assistant_entry"])
@@ -903,6 +943,12 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 fn = call["function"]
                 result = await mcp_client.call_tool(fn["name"], fn.get("arguments", {}))
                 turn_results.append((call, json.dumps(result.data)))
+                trace.append({
+                    "turn": turn + 1,
+                    "kind": "exploration",
+                    "tool": fn["name"],
+                    "detail": _summarize_result(result.data),
+                })
 
             # Actions : jamais exécutées ici (aucun effet de bord
             # pendant la planification) -- juste accumulées, avec un
@@ -911,6 +957,13 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
             for call in action_calls:
                 collected_action_calls.append(call)
                 turn_results.append((call, "Proposition enregistrée pour le plan."))
+                fn = call["function"]
+                trace.append({
+                    "turn": turn + 1,
+                    "kind": "proposal",
+                    "tool": fn["name"],
+                    "detail": _summarize(fn["name"], fn.get("arguments", {})),
+                })
 
             _append_tool_results(messages, turn_results)
 
@@ -1008,4 +1061,4 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 "reformulez la demande, ou réessayez."
             )
 
-    return actions, excluded_actions, notice
+    return actions, excluded_actions, notice, trace

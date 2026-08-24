@@ -152,13 +152,21 @@ class PlanRequest(BaseModel):
 @app.post("/plan")
 async def plan(body: PlanRequest):
     try:
-        actions, excluded_actions, notice = await planner.build_plan(body.prompt)
+        actions, excluded_actions, notice, trace = await planner.build_plan(body.prompt)
     except Exception as exc:
         status_code, detail = _describe_llm_error(exc)
         # logger.exception : voir le même correctif sur ping_llm() ci-dessus.
         logger.exception("build_plan a échoué (%s)", type(exc).__name__)
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    return {"actions": actions, "excluded_actions": excluded_actions, "clarification": notice}
+    return {
+        "actions": actions,
+        "excluded_actions": excluded_actions,
+        "clarification": notice,
+        # CORRECTIF (2026-08-24, Laurent, portage de db8b25a depuis
+        # feature/palier5) -- trace tour-par-tour pour le panneau
+        # "Pourquoi ce plan ?" côté frontend, voir agent/planner.py.
+        "trace": trace,
+    }
 
 
 class ExecuteRequest(BaseModel):
