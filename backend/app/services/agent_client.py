@@ -44,21 +44,25 @@ from app.config import AGENT_AI_URL, AGENT_PLAN_TIMEOUT_SECONDS
 _TIMEOUT = httpx.Timeout(AGENT_PLAN_TIMEOUT_SECONDS)
 _PING_TIMEOUT = httpx.Timeout(10.0)
 
-# ping_llm() specifically waits on a real LLM round trip (agent -> Ollama),
-# and agent/main.py's own call to Ollama already allows up to 60s (see
-# OLLAMA_API_BASE client in ping-llm). This timeout MUST stay comfortably
-# above that, or the backend gives up on the agent before the agent gives
-# up on Ollama. (Separate, independent chain from the /plan one above --
-# a lightweight health check, not a real plan generation.)
+# ping_llm() specifically waits on a real LLM round trip (agent -> LLM
+# provider), exactly one call -- same cost profile as a single turn of
+# /plan. CORRECTIF (24/08, Laurent) : ne plus avoir une valeur en dur ici
+# (ancienne bogue -- 90.0 puis 260.0 codés en clair, à corriger à la main
+# à chaque fois qu'on veut donner plus de temps à une machine lente),
+# réutiliser directement AGENT_PLAN_TIMEOUT_SECONDS -- déjà importé,
+# déjà = LLM_CALL_TIMEOUT_SECONDS + 15s. Ça reste une chaîne SÉPARÉE de
+# /plan au sens fonctionnel (ping() plus bas décorrèle exprès "l'agent
+# répond" de "le LLM répond") -- seule la VALEUR du timeout est
+# mutualisée, pas la sémantique de l'endpoint.
 #
-# In practice ping_llm() also needs enough RAM for Ollama to actually load
-# a model, which turned out not to be a given (OOM-killed even on the
-# smallest qwen3 tag, on a 3GB-constrained environment) -- that failure
-# mode is independent of this codebase and outside what a longer timeout
-# can fix. ping() below exists specifically to decouple "is the agent
-# reachable" (what palier 2 needs) from "can this machine run an LLM right
-# now" (a separate, later concern).
-_PING_LLM_TIMEOUT = httpx.Timeout(90.0)
+# ping_llm() a aussi besoin d'assez de RAM pour qu'Ollama charge un
+# modèle, ce qui n'est pas garanti (OOM-killed observé même sur le plus
+# petit tag qwen3, sur un environnement contraint à 3 Go) -- ce mode de
+# panne est indépendant de ce code et hors de portée d'un timeout plus
+# long, quelle que soit sa valeur. ping() ci-dessous existe justement pour
+# découpler "l'agent est joignable" (ce dont palier 2 a besoin) de "cette
+# machine peut faire tourner un LLM maintenant" (un souci séparé, plus tardif).
+_PING_LLM_TIMEOUT = httpx.Timeout(AGENT_PLAN_TIMEOUT_SECONDS)
 
 
 class AgentAIError(httpx.HTTPError):

@@ -58,19 +58,28 @@ def _describe_llm_error(exc: Exception) -> tuple[int, str]:
             "de débit dépassée -- réessayez dans un instant."
         )
     if isinstance(exc, getattr(litellm, "Timeout", ())):
-        return 504, f"Le fournisseur LLM ({provider}) n'a pas répondu à temps (timeout)."
+        return 504, f"Le fournisseur LLM ({provider}) n'a pas répondu à temps (timeout) : {exc}"
     if isinstance(exc, getattr(litellm, "APIConnectionError", ())):
+        # CORRECTIF (24/08, Laurent) -- {exc} ajouté ici : cette branche ne
+        # remontait jusque-là que le message générique ci-dessous, jamais
+        # le détail réel de l'exception LiteLLM sous-jacente (contrairement
+        # aux branches BadRequestError/APIError plus bas). Repro observée
+        # sur un prompt multi-actions lourd (Cas 2) : LiteLLM classe parfois
+        # un VRAI timeout de génération en APIConnectionError plutôt qu'en
+        # Timeout pour les fournisseurs locaux (ollama_chat) -- sans {exc}
+        # ici, impossible de distinguer ce cas d'un vrai problème réseau/
+        # conteneur arrêté juste en lisant le message affiché à l'écran.
         return 503, (
             f"Impossible de joindre le fournisseur LLM ({provider}) -- "
             "réseau indisponible ou service injoignable. Vérifiez votre "
             "connexion et, si LLM_MODEL_NAME commence par 'ollama_chat/' "
             "ou 'ollama/', que le conteneur ollama est bien démarré "
-            "(--profile local-llm, voir README.md)."
+            f"(--profile local-llm, voir README.md). Détail technique : {exc}"
         )
     if isinstance(exc, getattr(litellm, "BadRequestError", ())):
         return 400, f"Le fournisseur LLM ({provider}) a rejeté la requête : {exc}"
     if isinstance(exc, (getattr(litellm, "ServiceUnavailableError", ()), getattr(litellm, "InternalServerError", ()))):
-        return 502, f"Le fournisseur LLM ({provider}) est actuellement indisponible."
+        return 502, f"Le fournisseur LLM ({provider}) est actuellement indisponible : {exc}"
     if isinstance(exc, getattr(litellm, "APIError", ())):
         return 502, f"Le fournisseur LLM ({provider}) a répondu une erreur : {exc}"
 
@@ -100,15 +109,25 @@ async def ping_llm():
     modèle Ollama local, clé API absente...) -- voir /ping ci-dessous
     pour un check plus léger qui ne dépend pas du LLM."""
     try:
+        # Réutilise EXACTEMENT le même timeout que build_plan() pour un
+        # tour (planner._LLM_CALL_TIMEOUT, dérivé de LLM_CALL_TIMEOUT_SECONDS
+        # -- voir son commentaire) : ping_llm() ne fait lui aussi qu'UN
+        # seul appel LLM, aucune raison d'avoir une valeur en dur séparée
+        # à retenir de corriger à la main à chaque fois (24/08, Laurent --
+        # correctif suite à une valeur en dur oubliée ici).
         response = await litellm.acompletion(
             model=planner.LLM_MODEL_NAME,
             messages=[{"role": "user", "content": "Réponds en une phrase : que fais-tu ?"}],
-            timeout=60,
+            timeout=planner._LLM_CALL_TIMEOUT,
         )
         return {"model": planner.LLM_MODEL_NAME, "response": response.choices[0].message.content}
     except Exception as exc:
         status_code, detail = _describe_llm_error(exc)
-        logger.error("ping_llm a échoué (%s) : %s", type(exc).__name__, detail)
+        # logger.exception (au lieu de logger.error) : capture la trace
+        # Python complète côté logs agent, même si le message affiché à
+        # l'utilisateur (detail) reste condensé -- correctif du même
+        # ordre que celui de _describe_llm_error ci-dessus (24/08, Laurent).
+        logger.exception("ping_llm a échoué (%s)", type(exc).__name__)
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
@@ -136,7 +155,8 @@ async def plan(body: PlanRequest):
         actions, excluded_actions, notice = await planner.build_plan(body.prompt)
     except Exception as exc:
         status_code, detail = _describe_llm_error(exc)
-        logger.error("build_plan a échoué (%s) : %s", type(exc).__name__, detail)
+        # logger.exception : voir le même correctif sur ping_llm() ci-dessus.
+        logger.exception("build_plan a échoué (%s)", type(exc).__name__)
         raise HTTPException(status_code=status_code, detail=detail) from exc
     return {"actions": actions, "excluded_actions": excluded_actions, "clarification": notice}
 

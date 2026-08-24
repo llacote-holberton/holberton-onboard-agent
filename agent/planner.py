@@ -797,6 +797,14 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
 
     collected_action_calls: list[dict] = []
     final_text: str | None = None
+    # CORRECTIF (2026-08-24, Laurent) -- voir le commentaire complet plus
+    # bas, au calcul de `notice` : garde le texte du TOUT PREMIER tour sans
+    # tool_call, avant toute relance narration. _FIRST_TURN_NARRATION_NUDGE
+    # (voir ci-dessus) demande explicitement au modèle de répondre "Terminé"
+    # si aucune action n'est pertinente -- ce qui écrasait un vrai refus
+    # explicite (ex: tentative d'injection de prompt) par ce mot unique et
+    # sans intérêt pour l'utilisateur.
+    first_turn_text: str | None = None
     concluded = False  # True dès que le modèle répond sans tool_calls (fin normale)
     # RECONCILIATION 2026-08-20 (Laurent) -- voir docstring de module,
     # section "narration sans tool_call" : garde-fou pour n'accorder
@@ -815,6 +823,8 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
                 # Réponse finale en texte -- soit rien à proposer du
                 # tout (premier tour), soit "Terminé" après relance.
                 final_text = turn_result["text"]
+                if first_turn_text is None:
+                    first_turn_text = final_text
                 # DEBUG (réactivé 2026-08-20, Laurent -- voir docstring
                 # de module) : le modèle a décroché du format tool_calls
                 # structuré et répondu en texte libre. Repro observée
@@ -976,7 +986,22 @@ async def build_plan(prompt: str) -> tuple[list[dict], list[dict], str | None]:
     notice = None
     if not actions and not excluded_actions:
         if concluded:
-            notice = final_text or None
+            # CORRECTIF (2026-08-24, Laurent) -- préférer le texte du
+            # PREMIER tour (`first_turn_text`) à celui du dernier
+            # (`final_text`) quand aucun tool n'a jamais été appelé de
+            # toute la boucle. Motif : _FIRST_TURN_NARRATION_NUDGE (voir
+            # plus haut) instruit explicitement le modèle de répondre
+            # "Terminé" et rien d'autre si aucune action n'est pertinente
+            # -- ce qui est exactement le cas pour un refus légitime
+            # (ex: tentative d'injection de prompt, "ignore tes
+            # instructions..."). Sans ce correctif, le vrai refus explicite
+            # du modèle au tour 0 ("Je ne peux pas ignorer mes
+            # instructions...") était systématiquement remplacé par ce
+            # seul mot "Terminé" après la relance -- inexploitable pour
+            # l'utilisateur. Le premier tour est presque toujours le plus
+            # informatif : c'est la seule réponse du modèle qui n'a pas
+            # été bridée par la consigne "réponds juste Terminé".
+            notice = first_turn_text or final_text or None
         else:
             notice = (
                 f"Je n'ai pas pu conclure après {_MAX_TURNS} tours -- "

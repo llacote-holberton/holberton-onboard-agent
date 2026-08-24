@@ -354,7 +354,12 @@ with st.expander("Diagnostic de connectivité"):
         st.caption("Peut échouer si la machine n'a pas assez de RAM pour charger le modèle — indépendant du code.")
         with st.spinner("Appel de l'agent (peut prendre du temps sur un premier chargement du modèle)…"):
             try:
-                response = requests.get(f"{BACKEND_URL}/agent/ping-llm", timeout=130)
+                # CORRECTIF (24/08, Laurent) : réutilise _PLAN_GENERATION_TIMEOUT
+                # (ci-dessus) au lieu d'une valeur en dur -- un seul appel LLM
+                # dans les deux cas, même marge nécessaire. Ancienne bogue :
+                # 130 puis 270 codés en clair ici, jamais mis à jour en même
+                # temps que LLM_CALL_TIMEOUT_SECONDS.
+                response = requests.get(f"{BACKEND_URL}/agent/ping-llm", timeout=_PLAN_GENERATION_TIMEOUT)
                 response.raise_for_status()
                 st.success(f"Agent + LLM joignables : {response.json()}")
             except Exception as exc:

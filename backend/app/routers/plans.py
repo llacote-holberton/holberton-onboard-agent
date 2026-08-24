@@ -2,6 +2,7 @@
 Endpoints for plans: creation (planning step), lookup, and execution.
 """
 
+import logging
 from datetime import datetime, timezone
 
 import httpx
@@ -15,6 +16,8 @@ from app.schemas import ExecuteResult, PlanCreateRequest, PlanRead
 from app.services import agent_client
 from app.services.audit import log_action_status
 from app.services.idempotency import compute_idempotency_key
+
+logger = logging.getLogger("plans")
 
 router = APIRouter(tags=["plans"])
 
@@ -49,11 +52,35 @@ async def create_plan(body: PlanCreateRequest, db: Session = Depends(get_db)):
         )
         plan.actions.append(action)
 
-    db.flush()  # assign plan.id / action.id before the audit rows reference them
-    for action in plan.actions:
-        log_action_status(db, action.id, "proposed")
+    try:
+        db.flush()  # assign plan.id / action.id before the audit rows reference them
+        for action in plan.actions:
+            log_action_status(db, action.id, "proposed")
+        db.commit()
+    except Exception as exc:
+        # DURCISSEMENT (2026-08-24, Laurent) -- même trou que celui corrigé
+        # sur feature/palier5 (jamais porté ici) : sans ce filet, une panne
+        # cote ECRITURE EN BASE (ex: colonne manquante sur un volume SQLite
+        # créé avant l'ajout de `clarification`/`excluded_actions` au
+        # modèle Plan -- init_db() ne fait que create_all(), qui ne modifie
+        # jamais une table déjà existante) remonte comme un 500 brut sans
+        # aucun détail, alors même que l'agent avait répondu correctement.
+        # Repro rapportée par Hugo (24/08) : "500 Server Error" générique,
+        # pas 502 -- signe que ça casse ICI, après l'appel agent, pas dans
+        # l'appel lui-même (voir agent_client.AgentAIError, déjà catché par
+        # `except httpx.HTTPError` ci-dessus et déjà bien détaillé).
+        db.rollback()
+        logger.exception("Erreur inattendue en persistant le plan")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Une erreur inattendue est survenue en enregistrant le plan "
+                "(pas un problème côté modèle IA). Réessayez ; si le "
+                "problème persiste, contactez l'administrateur (voir les "
+                "logs du service backend)."
+            ),
+        ) from exc
 
-    db.commit()
     return plan
 
 
